@@ -222,6 +222,41 @@
         <div class="status" id="domain-status"></div>
       </div>
     </div>
+
+    <div class="section-container">
+      <h2 class="collapsed" role="button" aria-expanded="false" tabindex="0" id="screenshot-settings-header">Screenshot Settings</h2>
+      <div class="section-content collapsed" aria-labelledby="screenshot-settings-header">
+        <p>Configure default settings for screenshot capture:</p>
+
+        <div style="margin-top: 20px;">
+          <label for="screenshot-format" style="display: block; margin-bottom: 5px; font-weight: bold;">Default Format:</label>
+          <select id="screenshot-format" style="width: 200px; padding: 5px;">
+            <option value="png">PNG (Lossless)</option>
+            <option value="jpeg">JPEG (Compressed)</option>
+          </select>
+        </div>
+
+        <div style="margin-top: 15px;">
+          <label for="screenshot-quality" style="display: block; margin-bottom: 5px; font-weight: bold;">JPEG Quality (0-100):</label>
+          <input type="range" id="screenshot-quality" min="0" max="100" value="90" style="width: 200px;">
+          <span id="quality-value" style="margin-left: 10px; font-weight: bold;">90</span>
+          <p style="font-size: 12px; color: #666; margin-top: 5px;">Only applies to JPEG format. Higher values = better quality but larger file size.</p>
+        </div>
+
+        <div style="margin-top: 15px;">
+          <label for="screenshot-max-width" style="display: block; margin-bottom: 5px; font-weight: bold;">Max Width (pixels):</label>
+          <input type="number" id="screenshot-max-width" min="100" max="4096" value="1920" style="width: 200px; padding: 5px;">
+        </div>
+
+        <div style="margin-top: 15px;">
+          <label for="screenshot-max-height" style="display: block; margin-bottom: 5px; font-weight: bold;">Max Height (pixels):</label>
+          <input type="number" id="screenshot-max-height" min="100" max="4096" value="1080" style="width: 200px; padding: 5px;">
+        </div>
+
+        <button id="save-screenshot-settings" class="copy-button" style="margin-top: 15px;">Save Screenshot Settings</button>
+        <div class="status" id="screenshot-status"></div>
+      </div>
+    </div>
   </div>
 
   <script src="dist/options.js"></script>

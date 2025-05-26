@@ -1,13 +1,15 @@
 /**
  * Options page script for Browser Control MCP extension
  */
-import { 
-  getSecret, 
-  AVAILABLE_TOOLS, 
-  getAllToolSettings, 
+import {
+  getSecret,
+  AVAILABLE_TOOLS,
+  getAllToolSettings,
   setToolEnabled,
   getDomainDenyList,
-  setDomainDenyList
+  setDomainDenyList,
+  getScreenshotConfig,
+  setScreenshotConfig
 } from "./extension-config";
 
 const secretDisplay = document.getElementById(
@@ -26,6 +28,29 @@ const saveDomainListsButton = document.getElementById(
 ) as HTMLButtonElement;
 const domainStatusElement = document.getElementById(
   "domain-status"
+) as HTMLDivElement;
+
+// Screenshot settings elements
+const screenshotFormatSelect = document.getElementById(
+  "screenshot-format"
+) as HTMLSelectElement;
+const screenshotQualityRange = document.getElementById(
+  "screenshot-quality"
+) as HTMLInputElement;
+const qualityValueSpan = document.getElementById(
+  "quality-value"
+) as HTMLSpanElement;
+const screenshotMaxWidthInput = document.getElementById(
+  "screenshot-max-width"
+) as HTMLInputElement;
+const screenshotMaxHeightInput = document.getElementById(
+  "screenshot-max-height"
+) as HTMLInputElement;
+const saveScreenshotSettingsButton = document.getElementById(
+  "save-screenshot-settings"
+) as HTMLButtonElement;
+const screenshotStatusElement = document.getElementById(
+  "screenshot-status"
 ) as HTMLDivElement;
 
 /**
@@ -219,6 +244,83 @@ async function saveDomainLists(event: MouseEvent) {
 }
 
 /**
+ * Loads the screenshot configuration from storage and displays it
+ */
+async function loadScreenshotConfig() {
+  try {
+    const config = await getScreenshotConfig();
+    
+    screenshotFormatSelect.value = config.defaultFormat;
+    screenshotQualityRange.value = config.defaultQuality.toString();
+    qualityValueSpan.textContent = config.defaultQuality.toString();
+    screenshotMaxWidthInput.value = config.maxWidth?.toString() || "1920";
+    screenshotMaxHeightInput.value = config.maxHeight?.toString() || "1080";
+  } catch (error) {
+    console.error("Error loading screenshot config:", error);
+    screenshotStatusElement.textContent = "Error loading screenshot settings. Please check console for details.";
+    screenshotStatusElement.style.color = "red";
+    setTimeout(() => {
+      screenshotStatusElement.textContent = "";
+      screenshotStatusElement.style.color = "";
+    }, 3000);
+  }
+}
+
+/**
+ * Saves the screenshot configuration to storage
+ */
+async function saveScreenshotConfig(event: MouseEvent) {
+  if (!event.isTrusted) {
+    return;
+  }
+  
+  try {
+    const config = {
+      defaultFormat: screenshotFormatSelect.value as "png" | "jpeg",
+      defaultQuality: parseInt(screenshotQualityRange.value),
+      maxWidth: parseInt(screenshotMaxWidthInput.value),
+      maxHeight: parseInt(screenshotMaxHeightInput.value)
+    };
+    
+    // Validate values
+    if (config.defaultQuality < 0 || config.defaultQuality > 100) {
+      throw new Error("Quality must be between 0 and 100");
+    }
+    if (config.maxWidth < 100 || config.maxWidth > 4096) {
+      throw new Error("Max width must be between 100 and 4096");
+    }
+    if (config.maxHeight < 100 || config.maxHeight > 4096) {
+      throw new Error("Max height must be between 100 and 4096");
+    }
+    
+    await setScreenshotConfig(config);
+    
+    // Show success message
+    screenshotStatusElement.textContent = "Screenshot settings saved successfully!";
+    screenshotStatusElement.style.color = "#4caf50";
+    setTimeout(() => {
+      screenshotStatusElement.textContent = "";
+      screenshotStatusElement.style.color = "";
+    }, 3000);
+  } catch (error) {
+    console.error("Error saving screenshot config:", error);
+    screenshotStatusElement.textContent = `Failed to save screenshot settings: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    screenshotStatusElement.style.color = "red";
+    setTimeout(() => {
+      screenshotStatusElement.textContent = "";
+      screenshotStatusElement.style.color = "";
+    }, 3000);
+  }
+}
+
+/**
+ * Updates the quality value display when the range slider changes
+ */
+function updateQualityDisplay() {
+  qualityValueSpan.textContent = screenshotQualityRange.value;
+}
+
+/**
  * Initializes the collapsible sections
  */
 function initializeCollapsibleSections() {
@@ -243,9 +345,13 @@ function initializeCollapsibleSections() {
 // Initialize the page
 copyButton.addEventListener("click", copyToClipboard);
 saveDomainListsButton.addEventListener("click", saveDomainLists);
+saveScreenshotSettingsButton.addEventListener("click", saveScreenshotConfig);
+screenshotQualityRange.addEventListener("input", updateQualityDisplay);
+
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
   loadDomainLists();
+  loadScreenshotConfig();
   initializeCollapsibleSections();
 });

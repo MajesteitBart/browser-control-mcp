@@ -7,15 +7,16 @@ import {
   TabContentExtensionMessage,
   ServerMessageRequest,
   ExtensionError,
+  ScreenshotExtensionMessage,
 } from "@browser-control-mcp/common";
 import { isPortInUse } from "./util";
 import { join } from "path";
 import { readFile } from "fs/promises";
 import * as crypto from "crypto";
 
-// Support up to two initializations of the MCP server by clients
-// More initializations will result in EDADDRINUSE errors
-const WS_PORTS = [8081, 8082];
+// Support up to ten initializations of the MCP server by clients
+// Expanded port range to handle multiple instances and port conflicts
+const WS_PORTS = [8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 8090];
 const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
 
 interface ExtensionRequestResolver<T extends ExtensionMessage["resource"]> {
@@ -44,15 +45,27 @@ export class BrowserAPI {
     this.sharedSecret = secret;
 
     let selectedPort = null;
+    const portsInUse: number[] = [];
+
+    console.error(`Checking ${WS_PORTS.length} available ports: ${WS_PORTS.join(', ')}`);
 
     for (const port of WS_PORTS) {
-      if (!(await isPortInUse(port))) {
+      const inUse = await isPortInUse(port);
+      if (!inUse) {
         selectedPort = port;
+        console.error(`Selected available port: ${port}`);
         break;
+      } else {
+        portsInUse.push(port);
+        console.error(`Port ${port} is already in use`);
       }
     }
+    
     if (!selectedPort) {
-      throw new Error("All available ports are in use");
+      const errorMessage = `All available ports are in use. Checked ports: ${WS_PORTS.join(', ')}. ` +
+        `Ports in use: ${portsInUse.join(', ')}. ` +
+        `Please ensure no other MCP server instances are running, or restart your system to free up ports.`;
+      throw new Error(errorMessage);
     }
 
     this.wsServer = new WebSocket.Server({
@@ -83,7 +96,38 @@ export class BrowserAPI {
   }
 
   close() {
-    this.wsServer?.close();
+    console.error("Closing Browser API and cleaning up resources...");
+    
+    // Close WebSocket connection if it exists
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.error("Closing WebSocket connection");
+      this.ws.close();
+      this.ws = null;
+    }
+    
+    // Close WebSocket server if it exists
+    if (this.wsServer) {
+      console.error(`Closing WebSocket server on port ${this.wsServer.options.port}`);
+      this.wsServer.close((err) => {
+        if (err) {
+          console.error("Error closing WebSocket server:", err);
+        } else {
+          console.error("WebSocket server closed successfully");
+        }
+      });
+      this.wsServer = null;
+    }
+    
+    // Clear any pending extension requests
+    if (this.extensionRequestMap.size > 0) {
+      console.error(`Clearing ${this.extensionRequestMap.size} pending extension requests`);
+      for (const [correlationId, resolver] of this.extensionRequestMap.entries()) {
+        resolver.reject("Server is shutting down");
+      }
+      this.extensionRequestMap.clear();
+    }
+    
+    console.error("Browser API cleanup completed");
   }
 
   getSelectedPort() {
@@ -158,6 +202,20 @@ export class BrowserAPI {
       "find-highlight-result"
     );
     return message.noOfResults;
+  }
+
+  async takeScreenshot(
+    tabId: number,
+    format: "png" | "jpeg" = "png",
+    quality?: number
+  ): Promise<ScreenshotExtensionMessage> {
+    const correlationId = this.sendMessageToExtension({
+      cmd: "take-screenshot",
+      tabId,
+      format,
+      quality,
+    });
+    return await this.waitForResponse(correlationId, "screenshot");
   }
 
   private createSignature(payload: string): string {

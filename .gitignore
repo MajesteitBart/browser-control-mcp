@@ -30,8 +30,6 @@ jspm_packages/
 .env.production.local
 .env.local
 
-dist
-
 .temp
 .cache
 
@@ -48,3 +46,10 @@ dist
 .nx
 
 .DS_Store
+
+
+# Roo config files
+.roo/
+.roo/mcp.json
+mcp.json
+.roomodes

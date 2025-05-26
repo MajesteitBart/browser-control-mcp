@@ -177,6 +177,51 @@ mcpServer.tool(
   }
 );
 
+mcpServer.tool(
+  "take-screenshot",
+  "Take a screenshot of a browser tab and return it as base64 encoded image data",
+  {
+    tabId: z.number(),
+    format: z.enum(["png", "jpeg"]).default("png"),
+    quality: z.number().min(0).max(100).optional()
+  },
+  async ({ tabId, format, quality }) => {
+    try {
+      const screenshot = await browserApi.takeScreenshot(tabId, format, quality);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Screenshot captured successfully from tab ${tabId}`,
+          },
+          {
+            type: "text",
+            text: `Format: ${screenshot.format}`,
+          },
+          {
+            type: "text",
+            text: `Timestamp: ${new Date(screenshot.timestamp).toISOString()}`,
+          },
+          {
+            type: "text",
+            text: `Image data (base64): ${screenshot.imageData.substring(0, 100)}...`,
+          }
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to take screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            isError: true
+          }
+        ],
+      };
+    }
+  }
+);
+
 mcpServer.resource(
   "open-tab-contents",
   new ResourceTemplate("browser://tab/{tabId}/content", {

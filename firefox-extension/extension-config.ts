@@ -44,6 +44,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "find-highlight-in-browser-tab",
     name: "Find and Highlight in Browser Tab",
     description: "Allows the MCP server to search for and highlight text in web pages"
+  },
+  {
+    id: "take-screenshot",
+    name: "Take Screenshot",
+    description: "Allows the MCP server to capture screenshots of browser tabs"
   }
 ];
 
@@ -55,7 +60,8 @@ export const COMMAND_TO_TOOL_ID: Record<string, string> = {
   "get-browser-recent-history": "get-recent-browser-history",
   "get-tab-content": "get-tab-web-content",
   "reorder-tabs": "reorder-browser-tabs",
-  "find-highlight": "find-highlight-in-browser-tab"
+  "find-highlight": "find-highlight-in-browser-tab",
+  "take-screenshot": "take-screenshot"
 };
 
 // Storage schema for tool settings
@@ -63,11 +69,20 @@ export interface ToolSettings {
   [toolId: string]: boolean;
 }
 
+// Screenshot configuration options
+export interface ScreenshotConfig {
+  defaultFormat: "png" | "jpeg";
+  defaultQuality: number; // 0-100, only applies to JPEG
+  maxWidth?: number;
+  maxHeight?: number;
+}
+
 // Extended config interface
 export interface ExtensionConfig {
   secret: string;
   toolSettings?: ToolSettings;
   domainDenyList?: string[];
+  screenshotConfig?: ScreenshotConfig;
 }
 
 /**
@@ -82,6 +97,18 @@ export function getDefaultToolSettings(): ToolSettings {
 }
 
 /**
+ * Gets the default screenshot configuration
+ */
+export function getDefaultScreenshotConfig(): ScreenshotConfig {
+  return {
+    defaultFormat: "png",
+    defaultQuality: 90,
+    maxWidth: 1920,
+    maxHeight: 1080
+  };
+}
+
+/**
  * Gets the extension configuration from storage
  * @returns A Promise that resolves with the extension configuration
  */
@@ -92,6 +119,11 @@ export async function getConfig(): Promise<ExtensionConfig> {
   // Initialize toolSettings if it doesn't exist
   if (!config.toolSettings) {
     config.toolSettings = getDefaultToolSettings();
+  }
+  
+  // Initialize screenshotConfig if it doesn't exist
+  if (!config.screenshotConfig) {
+    config.screenshotConfig = getDefaultScreenshotConfig();
   }
   
   return config;
@@ -223,4 +255,24 @@ export async function isDomainInDenyList(url: string): Promise<boolean> {
     // If there's an error parsing the URL, return false
     return false;
   }
+}
+
+/**
+ * Gets the screenshot configuration
+ * @returns A Promise that resolves with the screenshot configuration
+ */
+export async function getScreenshotConfig(): Promise<ScreenshotConfig> {
+  const config = await getConfig();
+  return config.screenshotConfig || getDefaultScreenshotConfig();
+}
+
+/**
+ * Sets the screenshot configuration
+ * @param screenshotConfig The screenshot configuration to save
+ * @returns A Promise that resolves when the configuration is saved
+ */
+export async function setScreenshotConfig(screenshotConfig: ScreenshotConfig): Promise<void> {
+  const config = await getConfig();
+  config.screenshotConfig = screenshotConfig;
+  await saveConfig(config);
 }

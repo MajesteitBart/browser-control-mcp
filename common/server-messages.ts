@@ -38,6 +38,13 @@ export interface FindHighlightServerMessage extends ServerMessageBase {
   queryPhrase: string;
 }
 
+export interface TakeScreenshotServerMessage extends ServerMessageBase {
+  cmd: "take-screenshot";
+  tabId: number;
+  format?: "png" | "jpeg";
+  quality?: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -45,6 +52,7 @@ export type ServerMessage =
   | GetBrowserRecentHistoryServerMessage
   | GetTabContentServerMessage
   | ReorderTabsServerMessage
-  | FindHighlightServerMessage;
+  | FindHighlightServerMessage
+  | TakeScreenshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

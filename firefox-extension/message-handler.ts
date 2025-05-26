@@ -1,6 +1,6 @@
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { WebsocketClient } from "./client";
-import { isCommandAllowed, isDomainInDenyList } from "./extension-config";
+import { isCommandAllowed, isDomainInDenyList, getScreenshotConfig } from "./extension-config";
 
 export class MessageHandler {
   private client: WebsocketClient;
@@ -39,6 +39,14 @@ export class MessageHandler {
           req.correlationId,
           req.tabId,
           req.queryPhrase
+        );
+        break;
+      case "take-screenshot":
+        await this.takeScreenshot(
+          req.correlationId,
+          req.tabId,
+          req.format,
+          req.quality
         );
         break;
       default:
@@ -205,5 +213,159 @@ export class MessageHandler {
       correlationId,
       noOfResults: findResults.count,
     });
+  }
+
+  private async takeScreenshot(
+    correlationId: string,
+    tabId: number,
+    format?: "png" | "jpeg",
+    quality?: number
+  ): Promise<void> {
+    try {
+      // Validate input parameters
+      if (!Number.isInteger(tabId) || tabId < 0) {
+        throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+      }
+
+      if (format && !["png", "jpeg"].includes(format)) {
+        throw new Error(`Invalid format: ${format}. Must be 'png' or 'jpeg'.`);
+      }
+
+      if (quality !== undefined && (!Number.isInteger(quality) || quality < 0 || quality > 100)) {
+        throw new Error(`Invalid quality: ${quality}. Quality must be an integer between 0 and 100.`);
+      }
+
+      // Get screenshot configuration
+      const screenshotConfig = await getScreenshotConfig();
+      
+      // Use provided format or default from config
+      const finalFormat = format || screenshotConfig.defaultFormat;
+      const finalQuality = quality || screenshotConfig.defaultQuality;
+
+      // Validate that the tab exists and is accessible
+      let tab;
+      try {
+        tab = await browser.tabs.get(tabId);
+      } catch (tabError) {
+        throw new Error(`Tab with ID ${tabId} not found or is not accessible. The tab may have been closed or does not exist.`);
+      }
+
+      if (!tab) {
+        throw new Error(`Tab with ID ${tabId} not found`);
+      }
+
+      // Check if tab is in a valid state for screenshot
+      if (tab.status !== "complete") {
+        throw new Error(`Tab ${tabId} is still loading. Please wait for the page to finish loading before taking a screenshot.`);
+      }
+
+      // Check if the tab URL is valid and accessible
+      if (!tab.url) {
+        throw new Error(`Tab ${tabId} does not have a valid URL`);
+      }
+
+      // Check for special pages that can't be captured
+      if (tab.url.startsWith("about:") || tab.url.startsWith("moz-extension:") || tab.url.startsWith("chrome:")) {
+        throw new Error(`Cannot capture screenshot of system page: ${tab.url}`);
+      }
+
+      // Check if the tab URL is in the deny list
+      if (await isDomainInDenyList(tab.url)) {
+        throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+      }
+
+      // Validate window ID
+      const windowId = tab.windowId;
+      if (windowId === undefined || windowId < 0) {
+        throw new Error(`Tab ${tabId} does not have a valid window ID`);
+      }
+
+      // Check if window exists and is accessible
+      try {
+        const window = await browser.windows.get(windowId);
+        if (!window) {
+          throw new Error(`Window ${windowId} not found`);
+        }
+        if (window.state === "minimized") {
+          throw new Error(`Cannot capture screenshot: window ${windowId} is minimized`);
+        }
+      } catch (windowError) {
+        throw new Error(`Window ${windowId} is not accessible: ${windowError instanceof Error ? windowError.message : 'Unknown error'}`);
+      }
+
+      // Prepare capture options with validation
+      const captureOptions: any = {
+        format: finalFormat
+      };
+
+      // Only add quality for JPEG format and validate range
+      if (finalFormat === "jpeg") {
+        const validatedQuality = Math.max(0, Math.min(100, finalQuality));
+        captureOptions.quality = validatedQuality;
+      }
+
+      // Attempt to capture the visible tab with timeout handling
+      let imageDataUrl: string;
+      try {
+        // Set up a timeout for the capture operation
+        const capturePromise = browser.tabs.captureVisibleTab(windowId, captureOptions);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Screenshot capture timed out after 10 seconds")), 10000);
+        });
+        
+        imageDataUrl = await Promise.race([capturePromise, timeoutPromise]);
+      } catch (captureError) {
+        if (captureError instanceof Error) {
+          if (captureError.message.includes("permission")) {
+            throw new Error(`Permission denied: Cannot capture screenshot of tab ${tabId}. The extension may not have the required permissions.`);
+          } else if (captureError.message.includes("timeout")) {
+            throw captureError;
+          } else {
+            throw new Error(`Failed to capture screenshot: ${captureError.message}`);
+          }
+        } else {
+          throw new Error(`Failed to capture screenshot: Unknown error during capture operation`);
+        }
+      }
+
+      // Validate the captured image data
+      if (!imageDataUrl || typeof imageDataUrl !== "string") {
+        throw new Error("Invalid image data received from capture operation");
+      }
+
+      if (!imageDataUrl.startsWith("data:image/")) {
+        throw new Error("Invalid image format received from capture operation");
+      }
+
+      // Extract base64 data from data URL
+      const base64Data = imageDataUrl.split(',')[1];
+      if (!base64Data) {
+        throw new Error("Failed to extract base64 data from captured image");
+      }
+
+      // Validate base64 data length (basic sanity check)
+      if (base64Data.length < 100) {
+        throw new Error("Captured image data appears to be too small or corrupted");
+      }
+
+      await this.client.sendResourceToServer({
+        resource: "screenshot",
+        correlationId,
+        tabId,
+        imageData: base64Data,
+        format: finalFormat,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      console.error("Screenshot capture failed:", error);
+      
+      // Re-throw with more context if it's already a detailed error
+      if (error instanceof Error && (error.message.includes("Tab") || error.message.includes("Window") || error.message.includes("Permission"))) {
+        throw error;
+      }
+      
+      // Otherwise, wrap in a generic error
+      throw new Error(`Failed to capture screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 }

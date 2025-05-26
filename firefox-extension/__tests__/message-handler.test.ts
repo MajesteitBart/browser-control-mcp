@@ -41,8 +41,15 @@ describe("MessageHandler", () => {
         "get-tab-web-content": true,
         "reorder-browser-tabs": true,
         "find-highlight-in-browser-tab": true,
+        "take-screenshot": true,
       },
       domainDenyList: [],
+      screenshotConfig: {
+        defaultFormat: "png",
+        defaultQuality: 90,
+        maxWidth: 1920,
+        maxHeight: 1080
+      }
     };
 
     (browser.storage.local.get as jest.Mock).mockResolvedValue({
@@ -63,8 +70,15 @@ describe("MessageHandler", () => {
           "get-tab-web-content": true,
           "reorder-browser-tabs": true,
           "find-highlight-in-browser-tab": true,
+          "take-screenshot": true,
         },
         domainDenyList: [],
+        screenshotConfig: {
+          defaultFormat: "png",
+          defaultQuality: 90,
+          maxWidth: 1920,
+          maxHeight: 1080
+        }
       };
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: configWithDisabledOpenTab,
@@ -135,8 +149,15 @@ describe("MessageHandler", () => {
             "get-tab-web-content": true,
             "reorder-browser-tabs": true,
             "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
           },
           domainDenyList: ["example.com", "another.com"],
+          screenshotConfig: {
+            defaultFormat: "png",
+            defaultQuality: 90,
+            maxWidth: 1920,
+            maxHeight: 1080
+          }
         };
         (browser.storage.local.get as jest.Mock).mockResolvedValue({
           config: configWithDenyList,
@@ -167,8 +188,15 @@ describe("MessageHandler", () => {
             "get-tab-web-content": true,
             "reorder-browser-tabs": true,
             "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
           },
           domainDenyList: ["example.com", "another.com"],
+          screenshotConfig: {
+            defaultFormat: "png",
+            defaultQuality: 90,
+            maxWidth: 1920,
+            maxHeight: 1080
+          }
         };
         (browser.storage.local.get as jest.Mock).mockResolvedValue({
           config: configWithDenyList,
@@ -383,8 +411,15 @@ describe("MessageHandler", () => {
             "get-tab-web-content": true,
             "reorder-browser-tabs": true,
             "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
           },
           domainDenyList: ["example.com"], // Add example.com to deny list
+          screenshotConfig: {
+            defaultFormat: "png",
+            defaultQuality: 90,
+            maxWidth: 1920,
+            maxHeight: 1080
+          }
         };
         (browser.storage.local.get as jest.Mock).mockResolvedValue({
           config: configWithDenyList,
@@ -491,6 +526,368 @@ describe("MessageHandler", () => {
           resource: "find-highlight-result",
           correlationId: "test-correlation-id",
           noOfResults: 0,
+        });
+      });
+    });
+
+    describe("take-screenshot command", () => {
+      beforeEach(() => {
+        // Mock browser APIs for screenshot tests
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          status: "complete",
+          windowId: 1
+        });
+        (browser.windows.get as jest.Mock).mockResolvedValue({
+          id: 1,
+          state: "normal"
+        });
+        (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        );
+      });
+
+      it("should capture screenshot successfully with default settings", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).toHaveBeenCalledWith(123);
+        expect(browser.windows.get).toHaveBeenCalledWith(1);
+        expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(1, {
+          format: "png"
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "screenshot",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+          imageData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+          format: "png",
+          timestamp: expect.any(Number),
+        });
+      });
+
+      it("should capture screenshot with custom format and quality", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          format: "jpeg",
+          quality: 75,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+          "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA=="
+        );
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(1, {
+          format: "jpeg",
+          quality: 75
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "screenshot",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+          imageData: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA==",
+          format: "jpeg",
+          timestamp: expect.any(Number),
+        });
+      });
+
+      it("should throw error for invalid tab ID", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: -1,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid tab ID: -1. Tab ID must be a positive integer.");
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+      });
+
+      it("should throw error for invalid format", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          format: "gif" as any,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid format: gif. Must be 'png' or 'jpeg'.");
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+      });
+
+      it("should throw error for invalid quality", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          quality: 150,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid quality: 150. Quality must be an integer between 0 and 100.");
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+      });
+
+      it("should throw error when tab does not exist", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 999,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockRejectedValue(new Error("Tab not found"));
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Tab with ID 999 not found or is not accessible. The tab may have been closed or does not exist.");
+      });
+
+      it("should throw error when tab is still loading", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          status: "loading",
+          windowId: 1
+        });
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Tab 123 is still loading. Please wait for the page to finish loading before taking a screenshot.");
+      });
+
+      it("should throw error for system pages", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "about:blank",
+          status: "complete",
+          windowId: 1
+        });
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Cannot capture screenshot of system page: about:blank");
+      });
+
+      it("should throw error when domain is in deny list", async () => {
+        // Arrange
+        const configWithDenyList: ExtensionConfig = {
+          secret: "test-secret",
+          toolSettings: {
+            "open-browser-tab": true,
+            "close-browser-tabs": true,
+            "get-list-of-open-tabs": true,
+            "get-recent-browser-history": true,
+            "get-tab-web-content": true,
+            "reorder-browser-tabs": true,
+            "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
+          },
+          domainDenyList: ["example.com"],
+          screenshotConfig: {
+            defaultFormat: "png",
+            defaultQuality: 90,
+            maxWidth: 1920,
+            maxHeight: 1080
+          }
+        };
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: configWithDenyList,
+        });
+
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Domain in tab URL 'https://example.com' is in the deny list");
+      });
+
+      it("should throw error when window is minimized", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.get as jest.Mock).mockResolvedValue({
+          id: 1,
+          state: "minimized"
+        });
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Cannot capture screenshot: window 1 is minimized");
+      });
+
+      it("should throw error when capture operation fails", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockRejectedValue(
+          new Error("Capture failed")
+        );
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Failed to capture screenshot: Capture failed");
+      });
+
+      it("should throw error when capture returns invalid data", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue("invalid-data");
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid image format received from capture operation");
+      });
+
+      it("should throw error when base64 data is too small", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue("data:image/png;base64,abc");
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Captured image data appears to be too small or corrupted");
+      });
+
+      it("should handle permission errors gracefully", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockRejectedValue(
+          new Error("permission denied")
+        );
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Permission denied: Cannot capture screenshot of tab 123. The extension may not have the required permissions.");
+      });
+
+      it("should respect screenshot configuration from storage", async () => {
+        // Arrange
+        const configWithCustomScreenshot: ExtensionConfig = {
+          secret: "test-secret",
+          toolSettings: {
+            "open-browser-tab": true,
+            "close-browser-tabs": true,
+            "get-list-of-open-tabs": true,
+            "get-recent-browser-history": true,
+            "get-tab-web-content": true,
+            "reorder-browser-tabs": true,
+            "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
+          },
+          domainDenyList: [],
+          screenshotConfig: {
+            defaultFormat: "jpeg",
+            defaultQuality: 80,
+            maxWidth: 1280,
+            maxHeight: 720
+          }
+        };
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: configWithCustomScreenshot,
+        });
+
+        const request: ServerMessageRequest = {
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+          "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA=="
+        );
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(1, {
+          format: "jpeg",
+          quality: 80
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "screenshot",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+          imageData: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA==",
+          format: "jpeg",
+          timestamp: expect.any(Number),
         });
       });
     });

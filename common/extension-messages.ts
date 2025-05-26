@@ -55,6 +55,14 @@ export interface TabsClosedExtensionMessage extends ExtensionMessageBase {
   resource: "tabs-closed";
 }
 
+export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
+  resource: "screenshot";
+  tabId: number;
+  imageData: string; // Base64 encoded image data
+  format: "png" | "jpeg";
+  timestamp: number;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -62,7 +70,8 @@ export type ExtensionMessage =
   | BrowserHistoryExtensionMessage
   | ReorderedTabsExtensionMessage
   | FindHighlightExtensionMessage
-  | TabsClosedExtensionMessage;
+  | TabsClosedExtensionMessage
+  | ScreenshotExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;
