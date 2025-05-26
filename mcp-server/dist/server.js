@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -9,6 +42,8 @@ const zod_1 = require("zod");
 const browser_api_1 = require("./browser-api");
 const dayjs_1 = __importDefault(require("dayjs"));
 const relativeTime_1 = __importDefault(require("dayjs/plugin/relativeTime"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 dayjs_1.default.extend(relativeTime_1.default);
 const mcpServer = new mcp_js_1.McpServer({
     name: "BrowserControl",
@@ -137,11 +172,15 @@ mcpServer.tool("take-screenshot", "Take a screenshot of a browser tab and return
 }, async ({ tabId, format, quality }) => {
     try {
         const screenshot = await browserApi.takeScreenshot(tabId, format, quality);
+        // Create response text based on whether file was saved
+        const mainMessage = screenshot.filePath
+            ? `Screenshot saved to: ${screenshot.filePath}`
+            : `Screenshot captured from tab ${tabId} in ${screenshot.format} format`;
         return {
             content: [
                 {
                     type: "text",
-                    text: `Screenshot captured successfully from tab ${tabId}`,
+                    text: mainMessage,
                 },
                 {
                     type: "text",
@@ -197,7 +236,43 @@ mcpServer.resource("open-tab-contents", new mcp_js_1.ResourceTemplate("browser:/
         ],
     };
 });
-const browserApi = new browser_api_1.BrowserAPI();
+// Initialize screenshot directory
+function initializeScreenshotDirectory() {
+    const screenshotDir = process.env.SCREENSHOT_DIR || './screenshots';
+    const resolvedPath = path.resolve(screenshotDir);
+    try {
+        // Create directory if it doesn't exist
+        fs.mkdirSync(resolvedPath, { recursive: true });
+        // Validate directory is accessible and writable
+        fs.accessSync(resolvedPath, fs.constants.W_OK | fs.constants.R_OK);
+        // Ensure it's actually a directory
+        const stats = fs.statSync(resolvedPath);
+        if (!stats.isDirectory()) {
+            throw new Error(`Path exists but is not a directory: ${resolvedPath}`);
+        }
+        // Test write with more comprehensive check
+        const testFile = path.join(resolvedPath, `.write-test-${Date.now()}`);
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        console.error(`Screenshot directory initialized successfully: ${resolvedPath}`);
+        return resolvedPath;
+    }
+    catch (error) {
+        const errorCode = error.code;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Failed to initialize screenshot directory '${resolvedPath}':`, {
+            error: errorMessage,
+            code: errorCode,
+            originalPath: screenshotDir,
+            resolvedPath: resolvedPath
+        });
+        console.error('Screenshot file saving will be disabled for this session');
+        return null; // Return null to indicate failure
+    }
+}
+// Initialize screenshot directory
+const screenshotDir = initializeScreenshotDirectory();
+const browserApi = new browser_api_1.BrowserAPI(screenshotDir);
 browserApi
     .init()
     .then((port) => {

@@ -58,9 +58,10 @@ export interface TabsClosedExtensionMessage extends ExtensionMessageBase {
 export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   resource: "screenshot";
   tabId: number;
-  imageData: string; // Base64 encoded image data
+  imageData: string; // Base64 encoded image data - ALWAYS included for backward compatibility
   format: "png" | "jpeg";
   timestamp: number;
+  filePath?: string; // Optional file path when screenshot is saved to disk
 }
 
 export type ExtensionMessage =

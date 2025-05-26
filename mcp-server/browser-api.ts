@@ -10,8 +10,9 @@ import {
   ScreenshotExtensionMessage,
 } from "@browser-control-mcp/common";
 import { isPortInUse } from "./util";
-import { join } from "path";
-import { readFile } from "fs/promises";
+import { join, resolve, relative } from "path";
+import { readFile, writeFile } from "fs/promises";
+import * as fs from "fs";
 import * as crypto from "crypto";
 
 // Support up to ten initializations of the MCP server by clients
@@ -29,6 +30,7 @@ export class BrowserAPI {
   private ws: WebSocket | null = null;
   private wsServer: WebSocket.Server | null = null;
   private sharedSecret: string | null = null;
+  private screenshotDir: string | null;
 
   // Map to persist the request to the extension. It maps the request correlationId
   // to a resolver, fulfulling a promise created when sending a message to the extension.
@@ -36,6 +38,10 @@ export class BrowserAPI {
     string,
     ExtensionRequestResolver<ExtensionMessage["resource"]>
   > = new Map();
+
+  constructor(screenshotDir?: string | null) {
+    this.screenshotDir = screenshotDir || null;
+  }
 
   async init() {
     const { secret } = readConfig();
@@ -204,6 +210,111 @@ export class BrowserAPI {
     return message.noOfResults;
   }
 
+  // Security and validation utility methods
+  private sanitizeFilename(filename: string): string {
+    // Remove or replace invalid characters for both Windows and Unix
+    const invalidChars = /[<>:"/\\|?*\x00-\x1F]/g;
+    return filename.replace(invalidChars, '_');
+  }
+
+  private async validateScreenshotDirectory(): Promise<boolean> {
+    if (!this.screenshotDir) {
+      return false;
+    }
+
+    try {
+      // Check if directory exists and is accessible
+      await fs.promises.access(this.screenshotDir, fs.constants.F_OK);
+      
+      // Check if directory is writable
+      await fs.promises.access(this.screenshotDir, fs.constants.W_OK);
+      
+      // Verify it's actually a directory
+      const stats = await fs.promises.stat(this.screenshotDir);
+      if (!stats.isDirectory()) {
+        console.error(`Screenshot path '${this.screenshotDir}' exists but is not a directory`);
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Directory doesn't exist, try to create it
+        try {
+          await fs.promises.mkdir(this.screenshotDir, { recursive: true });
+          return true;
+        } catch (mkdirError) {
+          console.error(`Failed to create screenshot directory: ${(mkdirError as Error).message}`);
+          return false;
+        }
+      }
+      console.error(`Screenshot directory validation failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  private async validateSecurePath(filename: string): Promise<string> {
+    if (!this.screenshotDir) {
+      throw new Error('Screenshot directory not configured');
+    }
+
+    // Resolve the screenshot directory to an absolute path
+    const resolvedDir = resolve(this.screenshotDir);
+    const filePath = join(resolvedDir, filename);
+
+    // Validate the final path stays within the screenshot directory
+    const resolvedFilePath = resolve(filePath);
+    if (!resolvedFilePath.startsWith(resolvedDir)) {
+      throw new Error('Invalid file path: potential directory traversal attempt');
+    }
+
+    // Additional validation for symbolic links
+    try {
+      const stats = await fs.promises.lstat(resolvedDir);
+      if (stats.isSymbolicLink()) {
+        throw new Error('Screenshot directory cannot be a symbolic link');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+      // Directory doesn't exist yet, which is OK
+    }
+
+    return resolvedFilePath;
+  }
+
+  private async saveScreenshotWithRetry(
+    filePath: string,
+    imageBuffer: Buffer,
+    maxRetries: number = 2
+  ): Promise<void> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await writeFile(filePath, imageBuffer);
+        return; // Success
+      } catch (error) {
+        lastError = error as Error;
+        const errorCode = (error as NodeJS.ErrnoException).code;
+        
+        // Only retry for specific transient errors
+        if (attempt < maxRetries &&
+            (errorCode === 'EBUSY' || errorCode === 'EAGAIN' || errorCode === 'ETIMEDOUT')) {
+          console.error(`Screenshot save attempt ${attempt + 1} failed, retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1))); // Exponential backoff
+          continue;
+        }
+        
+        // Don't retry for permanent errors
+        break;
+      }
+    }
+    
+    throw lastError!;
+  }
+
   async takeScreenshot(
     tabId: number,
     format: "png" | "jpeg" = "png",
@@ -215,7 +326,99 @@ export class BrowserAPI {
       format,
       quality,
     });
-    return await this.waitForResponse(correlationId, "screenshot");
+    const screenshot = await this.waitForResponse(correlationId, "screenshot");
+
+    // Try to save screenshot to file (non-blocking, maintains backward compatibility)
+    if (this.screenshotDir) {
+      try {
+        // Validate format
+        const validFormats = ['png', 'jpeg'] as const;
+        if (!validFormats.includes(format)) {
+          console.error(`Invalid screenshot format: ${format}, defaulting to png`);
+          format = 'png';
+        }
+
+        // Validate directory exists and is writable
+        const isDirectoryValid = await this.validateScreenshotDirectory();
+        if (!isDirectoryValid) {
+          throw new Error('Screenshot directory is not accessible or writable');
+        }
+
+        // Create and sanitize filename
+        const rawFilename = `screenshot-${screenshot.timestamp}-${tabId}.${format}`;
+        const filename = this.sanitizeFilename(rawFilename);
+        
+        // Validate secure path (prevents directory traversal)
+        const filePath = await this.validateSecurePath(filename);
+        
+        // Convert base64 to buffer
+        const imageBuffer = Buffer.from(screenshot.imageData, 'base64');
+        
+        // Save with retry logic
+        await this.saveScreenshotWithRetry(filePath, imageBuffer);
+        
+        // Create enhanced screenshot response
+        const screenshotWithPath = {
+          ...screenshot,
+          filePath: filePath
+        };
+        
+        // Success logging with context
+        console.log(`Screenshot saved successfully:`, {
+          path: filePath,
+          tabId: tabId,
+          format: format,
+          size: imageBuffer.length,
+          timestamp: new Date(screenshot.timestamp).toISOString()
+        });
+        
+        return screenshotWithPath;
+        
+      } catch (error) {
+        const errorCode = (error as NodeJS.ErrnoException).code;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        // Enhanced error handling with specific cases
+        switch (errorCode) {
+          case 'ENOENT':
+            console.error(`Screenshot directory does not exist: ${this.screenshotDir}`);
+            break;
+          case 'EACCES':
+            console.error(`Permission denied writing to screenshot directory: ${this.screenshotDir}`);
+            break;
+          case 'ENOSPC':
+            console.error(`Insufficient disk space to save screenshot`);
+            break;
+          case 'EROFS':
+            console.error(`Cannot save screenshot: file system is read-only`);
+            break;
+          case 'EMFILE':
+            console.error(`Too many open files, cannot save screenshot`);
+            break;
+          default:
+            console.error(`Failed to save screenshot file: ${errorMessage} (code: ${errorCode || 'none'})`);
+        }
+        
+        // Enhanced error logging with context
+        console.error(`Screenshot save failed:`, {
+          error: errorMessage,
+          code: errorCode,
+          directory: this.screenshotDir,
+          tabId: tabId,
+          format: format,
+          timestamp: new Date(screenshot.timestamp).toISOString(),
+          estimatedSize: screenshot.imageData.length * 0.75
+        });
+        
+        // Don't fail the whole operation - file saving is optional
+        // Return original screenshot without filePath
+      }
+    } else {
+      // Screenshot directory not configured, skip file saving
+      console.error('Screenshot directory not configured, file saving disabled');
+    }
+
+    return screenshot;
   }
 
   private createSignature(payload: string): string {

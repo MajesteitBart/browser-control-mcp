@@ -7,6 +7,8 @@ import { z } from "zod";
 import { BrowserAPI } from "./browser-api";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
+import * as fs from "fs";
+import * as path from "path";
 
 dayjs.extend(relativeTime);
 
@@ -188,11 +190,17 @@ mcpServer.tool(
   async ({ tabId, format, quality }) => {
     try {
       const screenshot = await browserApi.takeScreenshot(tabId, format, quality);
+      
+      // Create response text based on whether file was saved
+      const mainMessage = screenshot.filePath
+        ? `Screenshot saved to: ${screenshot.filePath}`
+        : `Screenshot captured from tab ${tabId} in ${screenshot.format} format`;
+      
       return {
         content: [
           {
             type: "text",
-            text: `Screenshot captured successfully from tab ${tabId}`,
+            text: mainMessage,
           },
           {
             type: "text",
@@ -257,7 +265,52 @@ mcpServer.resource(
   }
 );
 
-const browserApi = new BrowserAPI();
+// Initialize screenshot directory
+function initializeScreenshotDirectory(): string | null {
+  const screenshotDir = process.env.SCREENSHOT_DIR || './screenshots';
+  const resolvedPath = path.resolve(screenshotDir);
+  
+  try {
+    // Create directory if it doesn't exist
+    fs.mkdirSync(resolvedPath, { recursive: true });
+    
+    // Validate directory is accessible and writable
+    fs.accessSync(resolvedPath, fs.constants.W_OK | fs.constants.R_OK);
+    
+    // Ensure it's actually a directory
+    const stats = fs.statSync(resolvedPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`Path exists but is not a directory: ${resolvedPath}`);
+    }
+    
+    // Test write with more comprehensive check
+    const testFile = path.join(resolvedPath, `.write-test-${Date.now()}`);
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    
+    console.error(`Screenshot directory initialized successfully: ${resolvedPath}`);
+    return resolvedPath;
+    
+  } catch (error) {
+    const errorCode = (error as NodeJS.ErrnoException).code;
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    console.error(`Failed to initialize screenshot directory '${resolvedPath}':`, {
+      error: errorMessage,
+      code: errorCode,
+      originalPath: screenshotDir,
+      resolvedPath: resolvedPath
+    });
+    
+    console.error('Screenshot file saving will be disabled for this session');
+    return null; // Return null to indicate failure
+  }
+}
+
+// Initialize screenshot directory
+const screenshotDir = initializeScreenshotDirectory();
+
+const browserApi = new BrowserAPI(screenshotDir);
 browserApi
   .init()
   .then((port) => {
