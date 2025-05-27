@@ -1,203 +1,97 @@
-# Browser Control MCP - Workflow State
+# Workflow State - Browser Control MCP Project
 
-## Current Request: Add Screenshot File Saving Functionality + Full Page Capture
-**Request ID**: SCREENSHOT-002 + FULLPAGE-001
-**Date**: 2025-05-27
-**Status**: In Progress
-**User Goal**: 
-1. Save screenshots as actual files to a directory specified by an environment variable ✅
-2. NEW: Capture full page screenshots (not just viewport) with 6000px height limit
+## Current Task: TASK-026 - Create Integration Tests for Browser Interaction Features
 
-## Previous Implementation (SCREENSHOT-001)
-**Status**: Completed
-**Summary**: Successfully implemented basic screenshot functionality with Base64 encoding
-**Completion Date**: 2025-01-26
+### Issue Discovery and Resolution (12:01 PM - 12:03 PM)
+User reported that screenshots no longer work correctly after interaction features implementation.
 
-## File Saving Implementation (SCREENSHOT-002)
-**Status**: Mostly Complete (4/7 tasks done)
-**Summary**: Successfully implemented file saving with security enhancements
+#### Critical Issues Identified and Status:
+1. **Screenshot Stitching Broken**: ✅ **FIXED** (12:03 PM)
+   - Problem: `OffscreenCanvas` is not available in Firefox extension background context
+   - Location: `firefox-extension/message-handler.ts` line 643
+   - Solution: Replaced OffscreenCanvas with DOM-based canvas approach using content script execution
+   - Impact: Multi-viewport screenshots now work in Firefox extensions
+   - Implementation:
+     - Single viewport screenshots return directly (optimization)
+     - Multi-viewport screenshots execute stitching code in content script context where DOM APIs are available
+     - Fallback mechanism returns first screenshot if stitching fails
+     - Added comprehensive error handling and comments
 
-## NEW: Full Page Screenshot Requirement
-**Date Added**: 2025-05-27 00:44
-**Requirement**: Capture full webpage content, not just visible viewport
-**Constraints**: Maximum height of 6000px to prevent excessive memory usage
-**Technical Challenge**: Firefox captureTab API only captures visible area
+2. **Implementation Deviation**: Interaction features use inline script injection instead of content scripts
+   - Design specified separate content script files
+   - Current implementation uses `browser.tabs.executeScript()` with inline code
+   - Status: Functional but deviates from the security-focused design
+   - Note: Will be addressed in future security improvements
 
-## Task Breakdown for New Feature
+3. **Manifest Configuration**: No updates made to manifest.json
+   - Current implementation doesn't require manifest changes
+   - Status: No content security improvements implemented yet
+   - Note: Will be addressed in future security improvements
 
-### TASK-011: Environment Variable Configuration
-**Status**: Completed
-**Assigned Mode**: BackendForge
-**Completion**: 2025-05-27 00:13
-**Description**: Add SCREENSHOT_DIR environment variable support to MCP server configuration
-**Deliverables**:
-- Add SCREENSHOT_DIR to environment variable schema ✅
-- Update .env.example with new variable ✅
-- Add validation for directory path ✅
-- Create directory if it doesn't exist ✅
-**Dependencies**: None
-**Estimated Complexity**: Low
-**Directus Subtask ID**: 35
+### Task Status: READY TO PROCEED - CRITICAL SECURITY VULNERABILITY FIXED
+- ✅ Critical screenshot issue resolved
+- ✅ Build verification successful (firefox-extension builds without errors)
+- ✅ **CRITICAL SECURITY VULNERABILITY FIXED** (12:14 PM)
 
-### TASK-012: File System Integration
-**Status**: Completed
-**Assigned Mode**: ApiArchitect (implemented alongside Task 37)
-**Completion**: 2025-05-27 00:17
-**Description**: Implement file saving logic in MCP server
-**Deliverables**:
-- Add file system operations to browser-api.ts ✅
-- Generate unique filenames with timestamps ✅
-- Save images in PNG/JPEG format based on request ✅
-- Handle file write errors gracefully ✅
-- Return saved file path in response ✅
-**Dependencies**: TASK-011
-**Estimated Complexity**: Medium
-**Directus Subtask ID**: 36
+### Security Fix Completed (12:14 PM):
+#### 🔒 CRITICAL VULNERABILITY ELIMINATED:
+**`wait-for-condition` JavaScript execution vulnerability - FIXED**
+- **Action Taken**: Feature completely disabled (Option 1 - Recommended approach)
+- **Location**: Lines 167-177 in message-handler.ts (switch case) and lines 2670+ (method implementation)
+- **Fix Details**:
+  - Switch case now returns clear security error message instead of executing vulnerable code
+  - Original `waitForCondition` method completely commented out with security warnings
+  - MCP server tool updated to return security warnings and suggest safe alternatives
+  - Browser API updated with security documentation
+- **Result**: Zero risk of arbitrary JavaScript execution
+- **Alternatives Provided**: wait-for-element, wait-for-element-visibility, wait-for-time
 
-### TASK-013: Update Response Structure
-**Status**: Completed
-**Assigned Mode**: ApiArchitect
-**Completion**: 2025-05-27 00:17
-**Description**: Modify screenshot response to include file path while maintaining backward compatibility
-**Deliverables**:
-- Update ScreenshotExtensionMessage type to include optional filePath ✅
-- Ensure Base64 data is still included in response ✅
-- Update MCP tool response structure ✅
-- Maintain backward compatibility for existing clients ✅
-**Dependencies**: TASK-012
-**Estimated Complexity**: Low
-**Directus Subtask ID**: 37
+#### ✅ Verification Results (12:14 PM):
+- **Firefox Extension**: Builds successfully without compilation errors
+- **MCP Server**: Builds successfully without compilation errors
+- **Security Posture**: Critical vulnerability completely eliminated
+- **API Compatibility**: Maintained (same parameters, returns informative error messages)
 
-### TASK-014: Error Handling for File Operations
-**Status**: Completed
-**Assigned Mode**: BackendInspector (review) + BackendForge (implementation)
-**Completion**: 2025-05-27 00:32
-**Description**: Add comprehensive error handling for file system operations
-**Deliverables**:
-- Directory permission validation ✅
-- Disk space checks ✅
-- File write error handling ✅
-- Fallback to Base64-only on file save failure ✅
-- Proper error messages and logging ✅
-- Path security validation ✅
-**Dependencies**: TASK-012
-**Estimated Complexity**: Medium
-**Directus Subtask ID**: 38
+#### ⚠️ Remaining Security Concerns (Non-blocking):
+1. Inconsistent CSS selector sanitization
+2. Limited sensitive field protection (only in type-text)
+3. No rate limiting implementation
 
-### TASK-015: Update Tests
-**Status**: Pending
-**Assigned Mode**: TestCrafter
-**Description**: Add unit and integration tests for file saving functionality
-**Deliverables**:
-- Tests for environment variable configuration
-- File system operation tests with mocks
-- Error scenario tests (permissions, disk space, etc.)
-- Integration tests for complete flow
-- Backward compatibility tests
-**Dependencies**: TASK-014
-**Estimated Complexity**: Medium
-**Directus Subtask ID**: 39
+### Current Status:
+- ✅ Critical security blocker resolved
+- ✅ System ready for integration testing
+- 📋 Ready to resume TASK-026 - Create Integration Tests for Browser Interaction Features
 
-### TASK-016: Update Documentation
-**Status**: Pending
-**Assigned Mode**: Documentarian
-**Description**: Update all documentation to reflect new file saving capability
-**Deliverables**:
-- Update README with SCREENSHOT_DIR configuration
-- Document file naming convention
-- Add examples showing file path in response
-- Update API documentation
-- Add troubleshooting section for file permissions
-**Dependencies**: TASK-015
-**Estimated Complexity**: Low
-**Directus Subtask ID**: 40
+### Summary of Resolved Issues (12:15 PM):
+1. **Screenshot Functionality**: Fixed by replacing OffscreenCanvas with DOM-based approach
+2. **Security Vulnerability**: Fixed by disabling wait-for-condition feature
+3. **Build Status**: Both firefox-extension and mcp-server build successfully
+4. **Safe Operations Available**: 11 interaction features ready for testing
 
-### TASK-017: Security Review
-**Status**: Pending
-**Assigned Mode**: SecurityTester
-**Description**: Review security implications of file system access
-**Deliverables**:
-- Path traversal vulnerability assessment
-- File permission security review
-- Directory isolation validation
-- Filename sanitization review
-**Dependencies**: TASK-014
-**Estimated Complexity**: Medium
-**Directus Subtask ID**: 41
+### Ready for Integration Testing:
+- Scroll Operations: 3 features (scroll-to-position, scroll-by-offset, scroll-to-element)
+- Click Operations: 3 features (click-at-coordinates, click-element, hover-element)
+- Type Operations: 3 features (type-text, send-special-keys, clear-input-field)
+- Wait Operations: 3 safe features (wait-for-time, wait-for-element, wait-for-element-visibility)
 
-### TASK-018: Implement Full Page Screenshot (NEW)
-**Status**: Completed
-**Assigned Mode**: FrontCrafter + Code
-**Completion**: 2025-05-27 01:05
-**Description**: Implement full page screenshot capture with height limit
-**Deliverables**:
-- Research Firefox WebExtension APIs for full page capture ✅
-- Implement scrolling and stitching if needed ✅
-- Add height limit of 6000px ✅
-- Update message types if needed ✅
-- Maintain backward compatibility ✅
-- Fix tests for new functionality ✅
-**Dependencies**: TASK-014
-**Estimated Complexity**: High
-**Directus Subtask ID**: 42
+### Proceeding with Integration Test Creation
+Delegating to TestCrafter mode to create comprehensive integration tests including security test cases.
 
-## Implementation Strategy
+### Screenshot Timeout Issue Fixed (1:19 PM)
+User reported screenshot failures with "Unknown error" but scrolling happening after the error.
 
-### Phase 1: Configuration and Infrastructure (TASK-011, TASK-013) ✅
-- Set up environment variable handling
-- Update response types for backward compatibility
+#### Root Cause Identified:
+- `EXTENSION_RESPONSE_TIMEOUT_MS` was set to 1000ms (1 second)
+- Full-page screenshots require scrolling, capturing, and stitching which takes longer
+- Timeout fired before operation completed, but scrolling continued in background
 
-### Phase 2: Core Implementation (TASK-012, TASK-014) ✅
-- Implement file saving logic
-- Add comprehensive error handling
+#### Solution Implemented:
+- Added operation-specific timeout support to `waitForResponse` method
+- Screenshot operations now use 30-second timeout (30000ms)
+- Other operations maintain fast 1-second timeout
+- Backward compatible implementation
 
-### Phase 3: Full Page Screenshot (TASK-018) ✅
-- Research and implement full page capture ✅
-- Add height limiting ✅
-- Fix tests for new functionality ✅
-
-### Phase 4: Testing and Security (TASK-015, TASK-017)
-- Create comprehensive test suite
-- Perform security review
-
-### Phase 5: Documentation (TASK-016)
-- Update all documentation
-- Add configuration examples
-
-## Technical Architecture Changes
-- **New Environment Variable**: SCREENSHOT_DIR for specifying save location ✅
-- **Enhanced Response**: Include filePath alongside Base64 data ✅
-- **File System Integration**: Use Node.js fs module for file operations ✅
-- **Filename Convention**: screenshot-{timestamp}-{tabId}.{format} ✅
-- **NEW: Full Page Capture**: Implement scrolling/stitching or alternative API
-
-## Risk Assessment
-- **Low Risk**: Environment variable addition, documentation updates ✅
-- **Medium Risk**: File system operations (permissions, disk space) ✅
-- **High Risk**: Security implications of file system access (mitigated by path validation) ✅
-- **NEW High Risk**: Full page capture may have performance/memory implications
-
-## Key Decisions
-- **Backward Compatibility**: Always include Base64 data in response ✅
-- **File Naming**: Use timestamp and tab ID for unique names ✅
-- **Error Handling**: Gracefully fall back to Base64-only on file save failure ✅
-- **Security**: Strict path validation to prevent directory traversal ✅
-- **NEW: Height Limit**: Cap full page screenshots at 6000px
-
-## Next Steps
-1. ~~Research Firefox WebExtension APIs for full page screenshots~~ ✅
-2. ~~Implement full page capture functionality (TASK-018)~~ ✅
-3. Continue with testing tasks (TASK-015)
-4. Complete documentation and security review
-5. Perform security assessment (TASK-017)
-
-## Implementation Progress Log
-**2025-05-26 23:59**: Reopened task 10 in Directus and set to "in_progress"
-**2025-05-26 00:00**: Created comprehensive plan for file saving functionality
-**2025-05-27 00:10**: Created subtasks 35-41 in Directus for file saving functionality
-**2025-05-27 00:13**: Completed TASK-011 (Subtask 35) - Environment variable configuration implemented
-**2025-05-27 00:17**: Completed TASK-012 & TASK-013 (Subtasks 36 & 37) - File saving and response structure implemented
-**2025-05-27 00:24**: BackendInspector review identified critical security issues
-**2025-05-27 00:32**: Completed TASK-014 (Subtask 38) - All security issues fixed and error handling enhanced
-**2025-05-27 00:44**: New requirement added - Full page screenshots with 6000px height limit
-**2025-05-27 01:05**: Completed TASK-018 - Full page screenshot implementation with scroll-and-stitch approach
+#### Result:
+- ✅ Full-page screenshots now complete successfully
+- ✅ No impact on other operation performance
+- ✅ All tests passing

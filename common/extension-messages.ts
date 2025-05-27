@@ -64,6 +64,72 @@ export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   filePath?: string; // Optional file path when screenshot is saved to disk
 }
 
+export interface ScrollResultExtensionMessage extends ExtensionMessageBase {
+  resource: "scroll-result";
+  success: boolean;
+  finalPosition: { x: number; y: number };
+  message: string;
+  timestamp: number;
+}
+
+export interface ClickResultExtensionMessage extends ExtensionMessageBase {
+  resource: "click-result";
+  success: boolean;
+  elementFound: boolean;
+  clickExecuted: boolean;
+  message: string;
+  timestamp: number;
+  elementInfo?: {
+    exists: boolean;
+    visible: boolean;
+    interactable: boolean;
+    boundingRect?: DOMRect;
+  };
+}
+
+export interface HoverResultExtensionMessage extends ExtensionMessageBase {
+  resource: "hover-result";
+  success: boolean;
+  elementFound: boolean;
+  message: string;
+  timestamp: number;
+  elementInfo?: {
+    exists: boolean;
+    visible: boolean;
+    interactable: boolean;
+    boundingRect?: DOMRect;
+  };
+}
+
+export interface TypeResultExtensionMessage extends ExtensionMessageBase {
+  resource: "type-result";
+  success: boolean;
+  message: string;
+  timestamp: number;
+  charactersTyped?: number;
+  elementInfo?: {
+    exists: boolean;
+    visible: boolean;
+    interactable: boolean;
+    boundingRect?: DOMRect;
+  };
+}
+
+export interface WaitResultExtensionMessage extends ExtensionMessageBase {
+  resource: "wait-result";
+  success: boolean;
+  message: string;
+  timestamp: number;
+  conditionMet?: boolean;
+  waitTime?: number;
+  elementInfo?: {
+    exists: boolean;
+    visible: boolean;
+    interactable: boolean;
+    boundingRect?: DOMRect;
+  };
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -72,7 +138,12 @@ export type ExtensionMessage =
   | ReorderedTabsExtensionMessage
   | FindHighlightExtensionMessage
   | TabsClosedExtensionMessage
-  | ScreenshotExtensionMessage;
+  | ScreenshotExtensionMessage
+  | ScrollResultExtensionMessage
+  | ClickResultExtensionMessage
+  | HoverResultExtensionMessage
+  | TypeResultExtensionMessage
+  | WaitResultExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

@@ -47,6 +47,9 @@ const crypto = __importStar(require("crypto"));
 // Support up to ten initializations of the MCP server by clients
 // Expanded port range to handle multiple instances and port conflicts
 const WS_PORTS = [8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 8090];
+// Default timeout for most extension operations (1 second)
+// Note: Screenshot operations use a longer timeout (30 seconds) due to the time needed
+// for scrolling, content loading, and image stitching in full-page captures
 const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
 class BrowserAPI {
     ws = null;
@@ -296,7 +299,9 @@ class BrowserAPI {
             format,
             quality,
         });
-        const screenshot = await this.waitForResponse(correlationId, "screenshot");
+        // Use 30 second timeout for screenshot operations since full-page captures
+        // can take a long time due to scrolling, waiting for content to load, and stitching
+        const screenshot = await this.waitForResponse(correlationId, "screenshot", 30000);
         // Try to save screenshot to file (non-blocking, maintains backward compatibility)
         if (this.screenshotDir) {
             try {
@@ -378,6 +383,149 @@ class BrowserAPI {
         }
         return screenshot;
     }
+    async scrollToPosition(tabId, x = 0, y, behavior = "smooth") {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "scroll-to-position",
+            tabId,
+            x,
+            y,
+            behavior,
+        });
+        return await this.waitForResponse(correlationId, "scroll-result");
+    }
+    async scrollByOffset(tabId, deltaX = 0, deltaY, behavior = "smooth") {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "scroll-by-offset",
+            tabId,
+            deltaX,
+            deltaY,
+            behavior,
+        });
+        return await this.waitForResponse(correlationId, "scroll-result");
+    }
+    async scrollToElement(tabId, selector, block = "center", inline = "nearest", behavior = "smooth") {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "scroll-to-element",
+            tabId,
+            selector,
+            block,
+            inline,
+            behavior,
+        });
+        return await this.waitForResponse(correlationId, "scroll-result");
+    }
+    async clickAtCoordinates(tabId, x, y, button = "left", clickType = "single", modifiers = {}) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "click-at-coordinates",
+            tabId,
+            x,
+            y,
+            button,
+            clickType,
+            modifiers,
+        });
+        return await this.waitForResponse(correlationId, "click-result");
+    }
+    async clickElement(tabId, selector, button = "left", clickType = "single", waitForElement = 5000, scrollIntoView = true, modifiers = {}) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "click-element",
+            tabId,
+            selector,
+            button,
+            clickType,
+            waitForElement,
+            scrollIntoView,
+            modifiers,
+        });
+        return await this.waitForResponse(correlationId, "click-result");
+    }
+    async hoverElement(tabId, selector, x, y, waitForElement = 5000) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "hover-element",
+            tabId,
+            selector,
+            x,
+            y,
+            waitForElement,
+        });
+        return await this.waitForResponse(correlationId, "hover-result");
+    }
+    async typeText(tabId, text, selector, clearFirst, typeDelay, waitForElement) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "type-text",
+            tabId,
+            text,
+            selector,
+            clearFirst,
+            typeDelay,
+            waitForElement,
+        });
+        return await this.waitForResponse(correlationId, "type-result");
+    }
+    async sendSpecialKeys(tabId, keys, selector, modifiers) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "send-special-keys",
+            tabId,
+            keys,
+            selector,
+            modifiers,
+        });
+        return await this.waitForResponse(correlationId, "type-result");
+    }
+    async clearInputField(tabId, selector, waitForElement) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "clear-input-field",
+            tabId,
+            selector,
+            waitForElement,
+        });
+        return await this.waitForResponse(correlationId, "type-result");
+    }
+    async waitForTime(duration, message) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "wait-for-time",
+            duration,
+            message,
+        });
+        return await this.waitForResponse(correlationId, "wait-result");
+    }
+    async waitForElement(tabId, selector, timeout = 5000, pollInterval = 100, visible = false) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "wait-for-element",
+            tabId,
+            selector,
+            timeout,
+            pollInterval,
+            visible,
+        });
+        return await this.waitForResponse(correlationId, "wait-result");
+    }
+    async waitForElementVisibility(tabId, selector, timeout = 5000, threshold = 0.1) {
+        const correlationId = this.sendMessageToExtension({
+            cmd: "wait-for-element-visibility",
+            tabId,
+            selector,
+            timeout,
+            threshold,
+        });
+        return await this.waitForResponse(correlationId, "wait-result");
+    }
+    async waitForCondition(tabId, condition, timeout = 5000, pollInterval = 100, args) {
+        // SECURITY FIX: This method has been disabled due to critical security vulnerability
+        // The previous implementation allowed arbitrary JavaScript execution via new Function()
+        // which could lead to complete system compromise, data theft, and malicious redirects
+        // Send message to extension which will return a security error
+        const correlationId = this.sendMessageToExtension({
+            cmd: "wait-for-condition",
+            tabId,
+            condition,
+            timeout,
+            pollInterval,
+            args,
+        });
+        // The extension will return an error message explaining the security fix
+        return await this.waitForResponse(correlationId, "wait-result");
+    }
     createSignature(payload) {
         if (!this.sharedSecret) {
             throw new Error("Shared secret not initialized");
@@ -418,7 +566,9 @@ class BrowserAPI {
         this.extensionRequestMap.delete(correlationId);
         reject(errorMessage);
     }
-    async waitForResponse(correlationId, resource) {
+    async waitForResponse(correlationId, resource, timeoutMs) {
+        // Use provided timeout or default to EXTENSION_RESPONSE_TIMEOUT_MS
+        const timeout = timeoutMs || EXTENSION_RESPONSE_TIMEOUT_MS;
         return new Promise((resolve, reject) => {
             this.extensionRequestMap.set(correlationId, {
                 resolve: resolve,
@@ -428,7 +578,7 @@ class BrowserAPI {
             setTimeout(() => {
                 this.extensionRequestMap.delete(correlationId);
                 reject("Timed out waiting for response");
-            }, EXTENSION_RESPONSE_TIMEOUT_MS);
+            }, timeout);
         });
     }
 }

