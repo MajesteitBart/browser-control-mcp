@@ -293,49 +293,8 @@ export class MessageHandler {
         throw new Error(`Window ${windowId} is not accessible: ${windowError instanceof Error ? windowError.message : 'Unknown error'}`);
       }
 
-      // Prepare capture options with validation
-      const captureOptions: any = {
-        format: finalFormat
-      };
-
-      // Only add quality for JPEG format and validate range
-      if (finalFormat === "jpeg") {
-        const validatedQuality = Math.max(0, Math.min(100, finalQuality));
-        captureOptions.quality = validatedQuality;
-      }
-
-      // Attempt to capture the visible tab with timeout handling
-      let imageDataUrl: string;
-      try {
-        // Set up a timeout for the capture operation
-        const capturePromise = browser.tabs.captureVisibleTab(windowId, captureOptions);
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("Screenshot capture timed out after 10 seconds")), 10000);
-        });
-        
-        imageDataUrl = await Promise.race([capturePromise, timeoutPromise]);
-      } catch (captureError) {
-        if (captureError instanceof Error) {
-          if (captureError.message.includes("permission")) {
-            throw new Error(`Permission denied: Cannot capture screenshot of tab ${tabId}. The extension may not have the required permissions.`);
-          } else if (captureError.message.includes("timeout")) {
-            throw captureError;
-          } else {
-            throw new Error(`Failed to capture screenshot: ${captureError.message}`);
-          }
-        } else {
-          throw new Error(`Failed to capture screenshot: Unknown error during capture operation`);
-        }
-      }
-
-      // Validate the captured image data
-      if (!imageDataUrl || typeof imageDataUrl !== "string") {
-        throw new Error("Invalid image data received from capture operation");
-      }
-
-      if (!imageDataUrl.startsWith("data:image/")) {
-        throw new Error("Invalid image format received from capture operation");
-      }
+      // Capture full page screenshot using scroll-and-stitch method
+      const imageDataUrl = await this.captureFullPageScreenshot(tabId, windowId, finalFormat, finalQuality);
 
       // Extract base64 data from data URL
       const base64Data = imageDataUrl.split(',')[1];
@@ -367,5 +326,249 @@ export class MessageHandler {
       // Otherwise, wrap in a generic error
       throw new Error(`Failed to capture screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  private async captureFullPageScreenshot(
+    tabId: number,
+    windowId: number,
+    format: "png" | "jpeg",
+    quality: number
+  ): Promise<string> {
+    // Maximum height limit to prevent excessive memory usage
+    const MAX_PAGE_HEIGHT = 6000;
+    
+    try {
+      // Inject content script to get page dimensions and handle scrolling
+      const pageDimensions = await this.getPageDimensions(tabId);
+      
+      // Calculate the effective capture height (limited by MAX_PAGE_HEIGHT)
+      const captureHeight = Math.min(pageDimensions.fullHeight, MAX_PAGE_HEIGHT);
+      
+      // If the page is short enough to fit in viewport, use single capture
+      if (captureHeight <= pageDimensions.viewportHeight) {
+        return await this.captureSingleScreenshot(windowId, format, quality);
+      }
+
+      // Store original scroll position to restore later
+      const originalScrollY = await this.getCurrentScrollPosition(tabId);
+      
+      try {
+        // Calculate number of captures needed
+        const viewportHeight = pageDimensions.viewportHeight;
+        const numCaptures = Math.ceil(captureHeight / viewportHeight);
+        
+        // Capture screenshots for each section
+        const screenshots: string[] = [];
+        
+        for (let i = 0; i < numCaptures; i++) {
+          const scrollY = i * viewportHeight;
+          
+          // Don't scroll beyond our capture limit
+          if (scrollY >= captureHeight) break;
+          
+          // Scroll to position
+          await this.scrollToPosition(tabId, scrollY);
+          
+          // Wait for scroll to complete and any lazy content to load
+          await this.waitForScrollComplete(tabId, 300);
+          
+          // Capture this section
+          const screenshot = await this.captureSingleScreenshot(windowId, format, quality);
+          screenshots.push(screenshot);
+        }
+        
+        // Stitch screenshots together if we have multiple
+        if (screenshots.length === 1) {
+          return screenshots[0];
+        }
+        
+        return await this.stitchScreenshots(screenshots, viewportHeight, captureHeight);
+        
+      } finally {
+        // Restore original scroll position
+        try {
+          await this.scrollToPosition(tabId, originalScrollY);
+          await this.waitForScrollComplete(tabId, 100);
+        } catch (restoreError) {
+          console.warn("Failed to restore original scroll position:", restoreError);
+        }
+      }
+      
+    } catch (error) {
+      console.error("Full page capture failed, falling back to viewport capture:", error);
+      
+      // Fallback to single viewport capture if full page capture fails
+      try {
+        return await this.captureSingleScreenshot(windowId, format, quality);
+      } catch (fallbackError) {
+        throw new Error(`Both full page and fallback screenshot capture failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+  }
+
+  private async getPageDimensions(tabId: number): Promise<{
+    fullHeight: number;
+    viewportHeight: number;
+    viewportWidth: number;
+  }> {
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `
+        (function() {
+          // Get the full document height
+          const body = document.body;
+          const html = document.documentElement;
+          
+          const fullHeight = Math.max(
+            body.scrollHeight,
+            body.offsetHeight,
+            html.clientHeight,
+            html.scrollHeight,
+            html.offsetHeight
+          );
+          
+          const viewportHeight = window.innerHeight;
+          const viewportWidth = window.innerWidth;
+          
+          return {
+            fullHeight: fullHeight,
+            viewportHeight: viewportHeight,
+            viewportWidth: viewportWidth
+          };
+        })();
+      `
+    });
+    
+    return results[0];
+  }
+
+  private async getCurrentScrollPosition(tabId: number): Promise<number> {
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `window.pageYOffset || document.documentElement.scrollTop;`
+    });
+    
+    return results[0] || 0;
+  }
+
+  private async scrollToPosition(tabId: number, scrollY: number): Promise<void> {
+    await browser.tabs.executeScript(tabId, {
+      code: `
+        window.scrollTo({
+          top: ${scrollY},
+          left: 0,
+          behavior: 'instant'
+        });
+      `
+    });
+  }
+
+  private async waitForScrollComplete(tabId: number, delay: number = 300): Promise<void> {
+    // Wait for scroll to complete and any dynamic content to load
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    // Wait for any lazy images to load
+    await browser.tabs.executeScript(tabId, {
+      code: `
+        (function() {
+          const images = document.querySelectorAll('img[loading="lazy"], img[data-src]');
+          const promises = Array.from(images).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.onload = img.onerror = resolve;
+              setTimeout(resolve, 1000); // Timeout after 1s
+            });
+          });
+          return Promise.all(promises);
+        })();
+      `
+    });
+  }
+
+  private async captureSingleScreenshot(
+    windowId: number,
+    format: "png" | "jpeg",
+    quality: number
+  ): Promise<string> {
+    const captureOptions: any = { format };
+    
+    if (format === "jpeg") {
+      captureOptions.quality = Math.max(0, Math.min(100, quality));
+    }
+    
+    // Set up timeout for capture operation
+    const capturePromise = browser.tabs.captureVisibleTab(windowId, captureOptions);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("Screenshot capture timed out after 10 seconds")), 10000);
+    });
+    
+    const imageDataUrl = await Promise.race([capturePromise, timeoutPromise]);
+    
+    if (!imageDataUrl || !imageDataUrl.startsWith("data:image/")) {
+      throw new Error("Invalid image data received from capture operation");
+    }
+    
+    return imageDataUrl;
+  }
+
+  private async stitchScreenshots(
+    screenshots: string[],
+    viewportHeight: number,
+    totalHeight: number
+  ): Promise<string> {
+    // Create a canvas to stitch the screenshots
+    const canvas = new OffscreenCanvas(1, 1);
+    const ctx = canvas.getContext('2d');
+    
+    if (!ctx) {
+      throw new Error("Failed to get canvas context for stitching");
+    }
+    
+    // Load the first image to get dimensions
+    const firstImage = await this.loadImage(screenshots[0]);
+    const width = firstImage.width;
+    
+    // Set canvas size
+    canvas.width = width;
+    canvas.height = totalHeight;
+    
+    // Draw each screenshot onto the canvas
+    let currentY = 0;
+    
+    for (let i = 0; i < screenshots.length; i++) {
+      const image = await this.loadImage(screenshots[i]);
+      
+      // Calculate how much of this image to use
+      const remainingHeight = totalHeight - currentY;
+      const imageHeight = Math.min(image.height, remainingHeight);
+      
+      if (imageHeight <= 0) break;
+      
+      // Draw the image (or portion of it) onto the canvas
+      ctx.drawImage(
+        image,
+        0, 0, width, imageHeight,  // source
+        0, currentY, width, imageHeight  // destination
+      );
+      
+      currentY += imageHeight;
+      
+      // Break if we've filled the total height
+      if (currentY >= totalHeight) break;
+    }
+    
+    // Convert canvas to data URL
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to convert stitched image to data URL"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  private async loadImage(dataUrl: string): Promise<ImageBitmap> {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    return await createImageBitmap(blob);
   }
 }

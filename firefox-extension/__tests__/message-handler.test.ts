@@ -544,8 +544,32 @@ describe("MessageHandler", () => {
           state: "normal"
         });
         (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
-          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         );
+        
+        // Mock browser.tabs.executeScript for page dimensions and scrolling
+        (browser.tabs.executeScript as jest.Mock).mockImplementation((tabId, options) => {
+          const code = options.code;
+          if (code.includes('fullHeight')) {
+            // Mock page dimensions query - return short page that fits in viewport
+            return Promise.resolve([{
+              fullHeight: 800,
+              viewportHeight: 800,
+              viewportWidth: 1280
+            }]);
+          } else if (code.includes('pageYOffset')) {
+            // Mock scroll position query
+            return Promise.resolve([0]);
+          } else if (code.includes('scrollTo')) {
+            // Mock scrollTo operation
+            return Promise.resolve([undefined]);
+          } else if (code.includes('img[loading="lazy"]')) {
+            // Mock lazy image loading wait
+            return Promise.resolve([Promise.resolve()]);
+          }
+          // Default fallback
+          return Promise.resolve([undefined]);
+        });
       });
 
       it("should capture screenshot successfully with default settings", async () => {
@@ -569,7 +593,7 @@ describe("MessageHandler", () => {
           resource: "screenshot",
           correlationId: "test-correlation-id",
           tabId: 123,
-          imageData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+          imageData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
           format: "png",
           timestamp: expect.any(Number),
         });
@@ -784,7 +808,7 @@ describe("MessageHandler", () => {
         // Act & Assert
         await expect(
           messageHandler.handleDecodedMessage(request)
-        ).rejects.toThrow("Failed to capture screenshot: Capture failed");
+        ).rejects.toThrow("Both full page and fallback screenshot capture failed: Capture failed");
       });
 
       it("should throw error when capture returns invalid data", async () => {
@@ -800,7 +824,7 @@ describe("MessageHandler", () => {
         // Act & Assert
         await expect(
           messageHandler.handleDecodedMessage(request)
-        ).rejects.toThrow("Invalid image format received from capture operation");
+        ).rejects.toThrow("Both full page and fallback screenshot capture failed: Invalid image data received from capture operation");
       });
 
       it("should throw error when base64 data is too small", async () => {
@@ -834,7 +858,7 @@ describe("MessageHandler", () => {
         // Act & Assert
         await expect(
           messageHandler.handleDecodedMessage(request)
-        ).rejects.toThrow("Permission denied: Cannot capture screenshot of tab 123. The extension may not have the required permissions.");
+        ).rejects.toThrow("Both full page and fallback screenshot capture failed: permission denied");
       });
 
       it("should respect screenshot configuration from storage", async () => {
