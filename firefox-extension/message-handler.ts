@@ -471,7 +471,7 @@ export class MessageHandler {
     quality: number
   ): Promise<string> {
     // Maximum height limit to prevent excessive memory usage
-    const MAX_PAGE_HEIGHT = 6000;
+    const MAX_PAGE_HEIGHT = 10800;
     const MAX_SECTION_HEIGHT = 1080; // Maximum height for each segment capture
     try {
       // Inject content script to get page dimensions and handle scrolling
