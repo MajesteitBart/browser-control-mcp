@@ -424,7 +424,10 @@ export class MessageHandler {
       }
 
       // Capture full page screenshot using scroll-and-stitch method
-      const imageDataUrl = await this.captureFullPageScreenshot(tabId, windowId, finalFormat, finalQuality);
+      let imageDataUrl = await this.captureFullPageScreenshot(tabId, windowId, finalFormat, finalQuality);
+
+      // Apply AI optimization if enabled
+      imageDataUrl = await this.optimizeScreenshotForAI(imageDataUrl, screenshotConfig);
 
       // Extract base64 data from data URL
       const base64Data = imageDataUrl.split(',')[1];
@@ -437,12 +440,15 @@ export class MessageHandler {
         throw new Error("Captured image data appears to be too small or corrupted");
       }
 
+      // Determine final format from the optimized image data URL
+      const actualFormat = imageDataUrl.startsWith('data:image/jpeg') ? 'jpeg' : 'png';
+
       await this.client.sendResourceToServer({
         resource: "screenshot",
         correlationId,
         tabId,
         imageData: base64Data,
-        format: finalFormat,
+        format: actualFormat,
         timestamp: Date.now(),
       });
     } catch (error) {
@@ -466,14 +472,14 @@ export class MessageHandler {
   ): Promise<string> {
     // Maximum height limit to prevent excessive memory usage
     const MAX_PAGE_HEIGHT = 6000;
-    
+    const MAX_SECTION_HEIGHT = 1080; // Maximum height for each segment capture
     try {
       // Inject content script to get page dimensions and handle scrolling
       const pageDimensions = await this.getPageDimensions(tabId);
       
       // Calculate the effective capture height (limited by MAX_PAGE_HEIGHT)
       const captureHeight = Math.min(pageDimensions.fullHeight, MAX_PAGE_HEIGHT);
-      
+      console.log(`Page dimensions: fullHeight=${pageDimensions.fullHeight}, viewportHeight=${pageDimensions.viewportHeight}, captureHeight=${captureHeight}`);
       // If the page is short enough to fit in viewport, use single capture
       if (captureHeight <= pageDimensions.viewportHeight) {
         return await this.captureSingleScreenshot(windowId, format, quality, tabId);
@@ -483,26 +489,30 @@ export class MessageHandler {
       const originalScrollY = await this.getCurrentScrollPosition(tabId);
       
       try {
-        // Calculate number of captures needed
-        const viewportHeight = pageDimensions.viewportHeight;
-        const numCaptures = Math.ceil(captureHeight / viewportHeight);
+        // Get content-aware segment boundaries instead of fixed viewport segments
+        // const segmentBoundaries = await this.getContentAwareSegments(tabId, pageDimensions, captureHeight);
         
-        // Capture screenshots for each section
+        const segments = Array(Math.round(pageDimensions.fullHeight/MAX_SECTION_HEIGHT)).fill(0).map((_, i) => ({
+          scrollY: i * MAX_SECTION_HEIGHT,
+          waitTime: 300, // Default wait time for each segment
+          overlapHeight: 20, // Small overlap to avoid gaps
+          segmentHeight: MAX_SECTION_HEIGHT
+        }));
+
+        console.log(`Content-aware segments: ${JSON.stringify(segments.length)} segments with capture height ${captureHeight}px`);
+        // Capture screenshots for each content-aware segment
         const screenshots: string[] = [];
         
-        for (let i = 0; i < numCaptures; i++) {
-          const scrollY = i * viewportHeight;
+        for (let i = 0; i < segments.length; i++) {
+          const segment = segments[i];
           
-          // Don't scroll beyond our capture limit
-          if (scrollY >= captureHeight) break;
-          
-          // Scroll to position
-          await this.scrollToPosition(tabId, scrollY);
-          
-          // Wait for scroll to complete and any lazy content to load
+          // Scroll to content-aware position
+          await this.scrollToPosition(tabId, segment.scrollY);
+          console.log(`Scrolling to segment ${i + 1}/${segments.length}: scrollY=${segment.scrollY}`);
+          // Wait for scroll to complete and content to stabilize
           await this.waitForScrollComplete(tabId, 300);
           
-          // Capture this section
+          // Capture this segment
           const screenshot = await this.captureSingleScreenshot(windowId, format, quality, tabId);
           screenshots.push(screenshot);
         }
@@ -512,7 +522,7 @@ export class MessageHandler {
           return screenshots[0];
         }
         
-        return await this.stitchScreenshots(screenshots, viewportHeight, captureHeight, tabId);
+        return await this.stitchScreenshots(screenshots, pageDimensions.viewportHeight, pageDimensions.fullHeight, tabId);
         
       } finally {
         // Restore original scroll position
@@ -591,6 +601,30 @@ export class MessageHandler {
       },
       args: [scrollY]
     });
+  }
+
+  private async getContentAwareSegments(
+    tabId: number,
+    pageDimensions: { viewportHeight: number; fullHeight: number },
+    captureHeight: number
+  ): Promise<Array<{ scrollY: number; waitTime?: number; overlapHeight?: number; segmentHeight?: number }>> {
+    // Get content boundaries from the page
+   
+    // Fallback to viewport-based segmentation if content analysis fails
+    const viewportHeight = pageDimensions.viewportHeight;
+    const numCaptures = Math.ceil(captureHeight / viewportHeight);
+    const fallbackBoundaries: Array<{ scrollY: number; waitTime?: number; overlapHeight?: number; segmentHeight?: number }> = [];
+    
+    for (let i = 0; i < numCaptures; i++) {
+      fallbackBoundaries.push({
+        scrollY: i * viewportHeight,
+        waitTime: 300,
+        overlapHeight: i > 0 ? 20 : 0 // Small overlap for fallback
+      });
+    }
+    
+    return fallbackBoundaries;
+   
   }
 
   private async waitForScrollComplete(tabId: number, delay: number = 300): Promise<void> {
@@ -872,6 +906,81 @@ export class MessageHandler {
     }
     
     return results[0].result as string;
+  }
+
+
+    
+   
+  private async optimizeScreenshotForAI(
+    imageDataUrl: string,
+    config: any
+  ): Promise<string> {
+    // If AI optimization is not enabled, return the original image
+    if (!config?.aiOptimization?.enabled) {
+      return imageDataUrl;
+    }
+
+    try {
+      // Create a canvas to perform optimization
+      const img = new Image();
+      
+      return new Promise((resolve, reject) => {
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          if (!ctx) {
+            resolve(imageDataUrl); // Fallback to original
+            return;
+          }
+
+          // Set canvas dimensions
+          canvas.width = img.width;
+          canvas.height = img.height;
+
+          // Draw the image
+          ctx.drawImage(img, 0, 0);
+
+          // Apply AI optimization settings
+          const aiConfig = config.aiOptimization;
+          let optimizedDataUrl: string;
+
+          if (aiConfig.format === 'jpeg') {
+            // Use JPEG with AI-optimized quality
+            const quality = Math.max(0.1, Math.min(1.0, aiConfig.quality / 100));
+            optimizedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          } else {
+            // Use PNG (no quality parameter for PNG)
+            optimizedDataUrl = canvas.toDataURL('image/png');
+          }
+
+          // Check file size if maxFileSize is specified
+          if (aiConfig.maxFileSize) {
+            const base64Data = optimizedDataUrl.split(',')[1];
+            const sizeInBytes = (base64Data.length * 3) / 4; // Approximate size
+            
+            if (sizeInBytes > aiConfig.maxFileSize) {
+              // If too large, try with lower quality for JPEG
+              if (aiConfig.format === 'jpeg') {
+                const lowerQuality = Math.max(0.1, (aiConfig.quality / 100) * 0.7);
+                optimizedDataUrl = canvas.toDataURL('image/jpeg', lowerQuality);
+              }
+            }
+          }
+
+          resolve(optimizedDataUrl);
+        };
+
+        img.onerror = () => {
+          resolve(imageDataUrl); // Fallback to original on error
+        };
+
+        img.src = imageDataUrl;
+      });
+    } catch (error) {
+      console.warn('AI optimization failed, using original image:', error);
+      return imageDataUrl;
+    }
   }
 
   private async loadImage(dataUrl: string): Promise<HTMLImageElement> {

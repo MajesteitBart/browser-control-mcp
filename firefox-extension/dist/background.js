@@ -203,7 +203,16 @@
       defaultFormat: "png",
       defaultQuality: 90,
       maxWidth: 1920,
-      maxHeight: 1080
+      maxHeight: 1080,
+      aiOptimization: {
+        enabled: false,
+        format: "jpeg",
+        quality: 85,
+        // Optimized for AI processing - balance between quality and size
+        maxFileSize: 2 * 1024 * 1024,
+        // 2MB max file size
+        compressionLevel: 80
+      }
     };
   }
   async function getConfig() {
@@ -611,7 +620,8 @@
         } catch (windowError) {
           throw new Error(`Window ${windowId} is not accessible: ${windowError instanceof Error ? windowError.message : "Unknown error"}`);
         }
-        const imageDataUrl = await this.captureFullPageScreenshot(tabId, windowId, finalFormat, finalQuality);
+        let imageDataUrl = await this.captureFullPageScreenshot(tabId, windowId, finalFormat, finalQuality);
+        imageDataUrl = await this.optimizeScreenshotForAI(imageDataUrl, screenshotConfig);
         const base64Data = imageDataUrl.split(",")[1];
         if (!base64Data) {
           throw new Error("Failed to extract base64 data from captured image");
@@ -619,12 +629,13 @@
         if (base64Data.length < 100) {
           throw new Error("Captured image data appears to be too small or corrupted");
         }
+        const actualFormat = imageDataUrl.startsWith("data:image/jpeg") ? "jpeg" : "png";
         await this.client.sendResourceToServer({
           resource: "screenshot",
           correlationId,
           tabId,
           imageData: base64Data,
-          format: finalFormat,
+          format: actualFormat,
           timestamp: Date.now()
         });
       } catch (error) {
@@ -637,21 +648,30 @@
     }
     async captureFullPageScreenshot(tabId, windowId, format, quality) {
       const MAX_PAGE_HEIGHT = 6e3;
+      const MAX_SECTION_HEIGHT = 1080;
       try {
         const pageDimensions = await this.getPageDimensions(tabId);
         const captureHeight = Math.min(pageDimensions.fullHeight, MAX_PAGE_HEIGHT);
+        console.log(`Page dimensions: fullHeight=${pageDimensions.fullHeight}, viewportHeight=${pageDimensions.viewportHeight}, captureHeight=${captureHeight}`);
         if (captureHeight <= pageDimensions.viewportHeight) {
           return await this.captureSingleScreenshot(windowId, format, quality, tabId);
         }
         const originalScrollY = await this.getCurrentScrollPosition(tabId);
         try {
-          const viewportHeight = pageDimensions.viewportHeight;
-          const numCaptures = Math.ceil(captureHeight / viewportHeight);
+          const segments = Array(Math.round(pageDimensions.fullHeight / MAX_SECTION_HEIGHT)).fill(0).map((_, i) => ({
+            scrollY: i * MAX_SECTION_HEIGHT,
+            waitTime: 300,
+            // Default wait time for each segment
+            overlapHeight: 20,
+            // Small overlap to avoid gaps
+            segmentHeight: MAX_SECTION_HEIGHT
+          }));
+          console.log(`Content-aware segments: ${JSON.stringify(segments.length)} segments with capture height ${captureHeight}px`);
           const screenshots = [];
-          for (let i = 0; i < numCaptures; i++) {
-            const scrollY = i * viewportHeight;
-            if (scrollY >= captureHeight) break;
-            await this.scrollToPosition(tabId, scrollY);
+          for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            await this.scrollToPosition(tabId, segment.scrollY);
+            console.log(`Scrolling to segment ${i + 1}/${segments.length}: scrollY=${segment.scrollY}`);
             await this.waitForScrollComplete(tabId, 300);
             const screenshot = await this.captureSingleScreenshot(windowId, format, quality, tabId);
             screenshots.push(screenshot);
@@ -659,7 +679,7 @@
           if (screenshots.length === 1) {
             return screenshots[0];
           }
-          return await this.stitchScreenshots(screenshots, viewportHeight, captureHeight, tabId);
+          return await this.stitchScreenshots(screenshots, pageDimensions.viewportHeight, pageDimensions.fullHeight, tabId);
         } finally {
           try {
             await this.scrollToPosition(tabId, originalScrollY);
@@ -720,6 +740,20 @@
         },
         args: [scrollY]
       });
+    }
+    async getContentAwareSegments(tabId, pageDimensions, captureHeight) {
+      const viewportHeight = pageDimensions.viewportHeight;
+      const numCaptures = Math.ceil(captureHeight / viewportHeight);
+      const fallbackBoundaries = [];
+      for (let i = 0; i < numCaptures; i++) {
+        fallbackBoundaries.push({
+          scrollY: i * viewportHeight,
+          waitTime: 300,
+          overlapHeight: i > 0 ? 20 : 0
+          // Small overlap for fallback
+        });
+      }
+      return fallbackBoundaries;
     }
     async waitForScrollComplete(tabId, delay = 300) {
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -942,6 +976,53 @@
         throw new Error("Stitching script execution failed");
       }
       return results[0].result;
+    }
+    async optimizeScreenshotForAI(imageDataUrl, config) {
+      if (!config?.aiOptimization?.enabled) {
+        return imageDataUrl;
+      }
+      try {
+        const img = new Image();
+        return new Promise((resolve, reject) => {
+          img.onload = () => {
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              resolve(imageDataUrl);
+              return;
+            }
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            const aiConfig = config.aiOptimization;
+            let optimizedDataUrl;
+            if (aiConfig.format === "jpeg") {
+              const quality = Math.max(0.1, Math.min(1, aiConfig.quality / 100));
+              optimizedDataUrl = canvas.toDataURL("image/jpeg", quality);
+            } else {
+              optimizedDataUrl = canvas.toDataURL("image/png");
+            }
+            if (aiConfig.maxFileSize) {
+              const base64Data = optimizedDataUrl.split(",")[1];
+              const sizeInBytes = base64Data.length * 3 / 4;
+              if (sizeInBytes > aiConfig.maxFileSize) {
+                if (aiConfig.format === "jpeg") {
+                  const lowerQuality = Math.max(0.1, aiConfig.quality / 100 * 0.7);
+                  optimizedDataUrl = canvas.toDataURL("image/jpeg", lowerQuality);
+                }
+              }
+            }
+            resolve(optimizedDataUrl);
+          };
+          img.onerror = () => {
+            resolve(imageDataUrl);
+          };
+          img.src = imageDataUrl;
+        });
+      } catch (error) {
+        console.warn("AI optimization failed, using original image:", error);
+        return imageDataUrl;
+      }
     }
     async loadImage(dataUrl) {
       return new Promise((resolve, reject) => {

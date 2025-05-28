@@ -65,7 +65,16 @@
       defaultFormat: "png",
       defaultQuality: 90,
       maxWidth: 1920,
-      maxHeight: 1080
+      maxHeight: 1080,
+      aiOptimization: {
+        enabled: false,
+        format: "jpeg",
+        quality: 85,
+        // Optimized for AI processing - balance between quality and size
+        maxFileSize: 2 * 1024 * 1024,
+        // 2MB max file size
+        compressionLevel: 80
+      }
     };
   }
   async function getConfig() {

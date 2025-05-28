@@ -87,6 +87,14 @@ export interface ScreenshotConfig {
   defaultQuality: number; // 0-100, only applies to JPEG
   maxWidth?: number;
   maxHeight?: number;
+  // AI Processing optimization options
+  aiOptimization?: {
+    enabled: boolean;
+    format: "png" | "jpeg";
+    quality: number; // 0-100, optimized for AI processing
+    maxFileSize?: number; // Maximum file size in bytes
+    compressionLevel?: number; // 0-9 for PNG, 0-100 for JPEG
+  };
 }
 
 // Extended config interface
@@ -116,7 +124,14 @@ export function getDefaultScreenshotConfig(): ScreenshotConfig {
     defaultFormat: "png",
     defaultQuality: 90,
     maxWidth: 1920,
-    maxHeight: 1080
+    maxHeight: 1080,
+    aiOptimization: {
+      enabled: false,
+      format: "jpeg",
+      quality: 85, // Optimized for AI processing - balance between quality and size
+      maxFileSize: 2 * 1024 * 1024, // 2MB max file size
+      compressionLevel: 80
+    }
   };
 }
 
