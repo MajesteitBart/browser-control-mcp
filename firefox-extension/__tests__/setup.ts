@@ -60,9 +60,13 @@ const mockBrowser = {
     query: jest.fn(),
     get: jest.fn(),
     executeScript: jest.fn(),
+    sendMessage: jest.fn(),
     move: jest.fn(),
     update: jest.fn(),
     captureVisibleTab: jest.fn(),
+  },
+  scripting: {
+    executeScript: jest.fn(),
   },
   windows: {
     get: jest.fn(),

@@ -167,6 +167,16 @@
       id: "take-screenshot",
       name: "Take Screenshot",
       description: "Allows the MCP server to capture screenshots of browser tabs"
+    },
+    {
+      id: "click-at-coordinates",
+      name: "Click at Coordinates",
+      description: "Allows the MCP server to click at specific coordinates on web pages"
+    },
+    {
+      id: "click-element",
+      name: "Click Element",
+      description: "Allows the MCP server to click on specific elements using CSS selectors"
     }
   ];
   var COMMAND_TO_TOOL_ID = {
@@ -177,7 +187,9 @@
     "get-tab-content": "get-tab-web-content",
     "reorder-tabs": "reorder-browser-tabs",
     "find-highlight": "find-highlight-in-browser-tab",
-    "take-screenshot": "take-screenshot"
+    "take-screenshot": "take-screenshot",
+    "click-at-coordinates": "click-at-coordinates",
+    "click-element": "click-element"
   };
   function getDefaultToolSettings() {
     const settings = {};
@@ -475,41 +487,42 @@
         throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
       }
       const MAX_CONTENT_LENGTH = 5e4;
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `
-      (function () {
-        function getLinks() {
-          const linkElements = document.querySelectorAll('a[href]');
-          return Array.from(linkElements).map(el => ({
-            url: el.href,
-            text: el.innerText.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || ''
-          })).filter(link => link.text !== '' && link.url.startsWith('https://') && !link.url.includes('#'));
-        }
-
-        function getTextContent() {
-          let isTruncated = false;
-          let text = document.body.innerText.substring(${offset || 0});
-          if (text.length > ${MAX_CONTENT_LENGTH}) {
-            text = text.substring(0, ${MAX_CONTENT_LENGTH});
-            isTruncated = true;
+      const results = await browser.scripting.executeScript({
+        target: { tabId },
+        func: (offset2, maxLength) => {
+          function getLinks() {
+            const linkElements = document.querySelectorAll("a[href]");
+            return Array.from(linkElements).map((el) => {
+              const anchor = el;
+              return {
+                url: anchor.href,
+                text: anchor.innerText.trim() || anchor.getAttribute("aria-label") || anchor.getAttribute("title") || ""
+              };
+            }).filter((link) => link.text !== "" && link.url.startsWith("https://") && !link.url.includes("#"));
           }
+          function getTextContent() {
+            let isTruncated2 = false;
+            let text = document.body.innerText.substring(offset2 || 0);
+            if (text.length > maxLength) {
+              text = text.substring(0, maxLength);
+              isTruncated2 = true;
+            }
+            return {
+              text,
+              isTruncated: isTruncated2
+            };
+          }
+          const textContent = getTextContent();
           return {
-            text, isTruncated
-          }
-        }
-
-        const textContent = getTextContent();
-
-        return {
-          links: getLinks(),
-          fullText: textContent.text,
-          isTruncated: textContent.isTruncated,
-          totalLength: document.body.innerText.length
-        };
-      })();
-    `
+            links: getLinks(),
+            fullText: textContent.text,
+            isTruncated: textContent.isTruncated,
+            totalLength: document.body.innerText.length
+          };
+        },
+        args: [offset || 0, MAX_CONTENT_LENGTH]
       });
-      const { isTruncated, fullText, links, totalLength } = results[0];
+      const { isTruncated, fullText, links, totalLength } = results[0].result;
       await this.client.sendResourceToServer({
         resource: "tab-content",
         tabId,
@@ -628,7 +641,7 @@
         const pageDimensions = await this.getPageDimensions(tabId);
         const captureHeight = Math.min(pageDimensions.fullHeight, MAX_PAGE_HEIGHT);
         if (captureHeight <= pageDimensions.viewportHeight) {
-          return await this.captureSingleScreenshot(windowId, format, quality);
+          return await this.captureSingleScreenshot(windowId, format, quality, tabId);
         }
         const originalScrollY = await this.getCurrentScrollPosition(tabId);
         try {
@@ -640,13 +653,13 @@
             if (scrollY >= captureHeight) break;
             await this.scrollToPosition(tabId, scrollY);
             await this.waitForScrollComplete(tabId, 300);
-            const screenshot = await this.captureSingleScreenshot(windowId, format, quality);
+            const screenshot = await this.captureSingleScreenshot(windowId, format, quality, tabId);
             screenshots.push(screenshot);
           }
           if (screenshots.length === 1) {
             return screenshots[0];
           }
-          return await this.stitchScreenshots(screenshots, viewportHeight, captureHeight);
+          return await this.stitchScreenshots(screenshots, viewportHeight, captureHeight, tabId);
         } finally {
           try {
             await this.scrollToPosition(tabId, originalScrollY);
@@ -658,20 +671,18 @@
       } catch (error) {
         console.error("Full page capture failed, falling back to viewport capture:", error);
         try {
-          return await this.captureSingleScreenshot(windowId, format, quality);
+          return await this.captureSingleScreenshot(windowId, format, quality, tabId);
         } catch (fallbackError) {
           throw new Error(`Both full page and fallback screenshot capture failed: ${error instanceof Error ? error.message : "Unknown error"}`);
         }
       }
     }
     async getPageDimensions(tabId) {
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `
-        (function() {
-          // Get the full document height
+      const results = await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => {
           const body = document.body;
           const html = document.documentElement;
-          
           const fullHeight = Math.max(
             body.scrollHeight,
             body.offsetHeight,
@@ -679,88 +690,113 @@
             html.scrollHeight,
             html.offsetHeight
           );
-          
           const viewportHeight = window.innerHeight;
           const viewportWidth = window.innerWidth;
-          
           return {
-            fullHeight: fullHeight,
-            viewportHeight: viewportHeight,
-            viewportWidth: viewportWidth
+            fullHeight,
+            viewportHeight,
+            viewportWidth
           };
-        })();
-      `
+        }
       });
-      return results[0];
+      return results[0].result;
     }
     async getCurrentScrollPosition(tabId) {
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `window.pageYOffset || document.documentElement.scrollTop;`
+      const results = await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => window.pageYOffset || document.documentElement.scrollTop
       });
-      return results[0] || 0;
+      return results[0].result || 0;
     }
     async scrollToPosition(tabId, scrollY) {
-      await browser.tabs.executeScript(tabId, {
-        code: `
-        window.scrollTo({
-          top: ${scrollY},
-          left: 0,
-          behavior: 'instant'
-        });
-      `
+      await browser.scripting.executeScript({
+        target: { tabId },
+        func: (scrollY2) => {
+          window.scrollTo({
+            top: scrollY2,
+            left: 0,
+            behavior: "instant"
+          });
+        },
+        args: [scrollY]
       });
     }
     async waitForScrollComplete(tabId, delay = 300) {
       await new Promise((resolve) => setTimeout(resolve, delay));
-      await browser.tabs.executeScript(tabId, {
-        code: `
-        (function() {
+      await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => {
           const images = document.querySelectorAll('img[loading="lazy"], img[data-src]');
-          const promises = Array.from(images).map(img => {
-            if (img.complete) return Promise.resolve();
-            return new Promise(resolve => {
-              img.onload = img.onerror = resolve;
-              setTimeout(resolve, 1000); // Timeout after 1s
+          const promises = Array.from(images).map((img) => {
+            const imageElement = img;
+            if (imageElement.complete) return Promise.resolve();
+            return new Promise((resolve) => {
+              imageElement.onload = imageElement.onerror = resolve;
+              setTimeout(resolve, 1e3);
             });
           });
           return Promise.all(promises);
-        })();
-      `
+        }
       });
     }
-    async captureSingleScreenshot(windowId, format, quality) {
+    async captureSingleScreenshot(windowId, format, quality, targetTabId) {
+      if (targetTabId !== void 0) {
+        try {
+          const tab = await browser.tabs.get(targetTabId);
+          if (!tab) {
+            throw new Error(`Target tab ${targetTabId} not found`);
+          }
+          if (tab.windowId !== windowId) {
+            throw new Error(`Target tab ${targetTabId} is not in window ${windowId}`);
+          }
+        } catch (tabError) {
+          throw new Error(`Target tab ${targetTabId} not found or is not accessible`);
+        }
+      }
       const captureOptions = { format };
       if (format === "jpeg") {
         captureOptions.quality = Math.max(0, Math.min(100, quality));
       }
-      const capturePromise = browser.tabs.captureVisibleTab(windowId, captureOptions);
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Screenshot capture timed out after 10 seconds")), 1e4);
-      });
-      const imageDataUrl = await Promise.race([capturePromise, timeoutPromise]);
-      if (!imageDataUrl || !imageDataUrl.startsWith("data:image/")) {
-        throw new Error("Invalid image data received from capture operation");
+      try {
+        const capturePromise = browser.tabs.captureVisibleTab(windowId, captureOptions);
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Screenshot capture timed out after 10 seconds")), 1e4);
+        });
+        const imageDataUrl = await Promise.race([capturePromise, timeoutPromise]);
+        if (!imageDataUrl || !imageDataUrl.startsWith("data:image/")) {
+          throw new Error("Invalid image data received from capture operation");
+        }
+        return imageDataUrl;
+      } catch (error) {
+        throw error;
       }
-      return imageDataUrl;
     }
-    async stitchScreenshots(screenshots, viewportHeight, totalHeight) {
+    async stitchScreenshots(screenshots, viewportHeight, totalHeight, targetTabId) {
       if (screenshots.length === 1) {
         return screenshots[0];
       }
       try {
-        const result = await this.executeStitchingInContentScript(screenshots, totalHeight);
+        const result = await this.executeStitchingInContentScript(screenshots, totalHeight, targetTabId);
         return result;
       } catch (error) {
         console.error("Content script stitching failed, falling back to simple concatenation:", error);
         return screenshots[0];
       }
     }
-    async executeStitchingInContentScript(screenshots, totalHeight) {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tabs.length) {
-        throw new Error("No active tab available for stitching operation");
+    async executeStitchingInContentScript(screenshots, totalHeight, targetTabId) {
+      let tab;
+      try {
+        tab = await browser.tabs.get(targetTabId);
+      } catch (tabError) {
+        throw new Error(`Target tab ${targetTabId} not found or is not accessible for stitching operation`);
       }
-      const tabId = tabs[0].id;
+      if (!tab) {
+        throw new Error(`Target tab ${targetTabId} not found`);
+      }
+      if (tab.status !== "complete") {
+        throw new Error(`Target tab ${targetTabId} is still loading. Cannot execute stitching script.`);
+      }
+      const tabId = targetTabId;
       const stitchingCode = `
       (function() {
         const screenshots = ${JSON.stringify(screenshots)};
@@ -836,13 +872,76 @@
         });
       })();
     `;
-      const results = await browser.tabs.executeScript(tabId, {
-        code: stitchingCode
+      const results = await browser.scripting.executeScript({
+        target: { tabId },
+        func: (screenshots2, totalHeight2) => {
+          return new Promise((resolve, reject) => {
+            try {
+              const firstImg = new Image();
+              firstImg.onload = function() {
+                const width = firstImg.width;
+                const canvas = document.createElement("canvas");
+                canvas.width = width;
+                canvas.height = totalHeight2;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) {
+                  reject(new Error("Failed to get canvas context"));
+                  return;
+                }
+                let currentY = 0;
+                let loadedImages = 0;
+                const images = [];
+                for (let i = 0; i < screenshots2.length; i++) {
+                  const img = new Image();
+                  img.onload = function() {
+                    images[i] = img;
+                    loadedImages++;
+                    if (loadedImages === screenshots2.length) {
+                      try {
+                        currentY = 0;
+                        for (let j = 0; j < images.length; j++) {
+                          const image = images[j];
+                          const remainingHeight = totalHeight2 - currentY;
+                          const imageHeight = Math.min(image.height, remainingHeight);
+                          if (imageHeight <= 0) break;
+                          ctx.drawImage(
+                            image,
+                            0,
+                            0,
+                            width,
+                            imageHeight,
+                            0,
+                            currentY,
+                            width,
+                            imageHeight
+                          );
+                          currentY += imageHeight;
+                          if (currentY >= totalHeight2) break;
+                        }
+                        const dataUrl = canvas.toDataURL("image/png");
+                        resolve(dataUrl);
+                      } catch (error) {
+                        reject(error);
+                      }
+                    }
+                  };
+                  img.onerror = () => reject(new Error(`Failed to load image ${i}`));
+                  img.src = screenshots2[i];
+                }
+              };
+              firstImg.onerror = () => reject(new Error("Failed to load first image"));
+              firstImg.src = screenshots2[0];
+            } catch (error) {
+              reject(error);
+            }
+          });
+        },
+        args: [screenshots, totalHeight]
       });
       if (!results || !results[0]) {
         throw new Error("Stitching script execution failed");
       }
-      return results[0];
+      return results[0].result;
     }
     async loadImage(dataUrl) {
       return new Promise((resolve, reject) => {
@@ -870,19 +969,16 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            try {
-              // Scroll to the specified position
-              window.scrollTo({
-                top: ${y},
-                left: ${x},
-                behavior: '${behavior}'
-              });
-              
-              // Wait a moment for smooth scrolling to complete
-              return new Promise(resolve => {
+        const results = await browser.scripting.executeScript({
+          target: { tabId },
+          func: (x2, y2, behavior2) => {
+            return new Promise((resolve) => {
+              try {
+                window.scrollTo({
+                  top: y2,
+                  left: x2,
+                  behavior: behavior2
+                });
                 const checkPosition = () => {
                   const finalX = window.pageXOffset || document.documentElement.scrollLeft;
                   const finalY = window.pageYOffset || document.documentElement.scrollTop;
@@ -892,24 +988,23 @@
                     message: "Scrolled to position successfully"
                   });
                 };
-                
-                if ('${behavior}' === 'smooth') {
-                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                if (behavior2 === "smooth") {
+                  setTimeout(checkPosition, 500);
                 } else {
                   checkPosition();
                 }
-              });
-            } catch (error) {
-              return {
-                success: false,
-                finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
-                message: "Scroll failed: " + error.message
-              };
-            }
-          })();
-        `
+              } catch (error) {
+                resolve({
+                  success: false,
+                  finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
+                  message: "Scroll failed: " + error.message
+                });
+              }
+            });
+          },
+          args: [x, y, behavior]
         });
-        const result = results[0];
+        const result = results[0].result;
         await this.client.sendResourceToServer({
           resource: "scroll-result",
           correlationId,
@@ -948,19 +1043,16 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            try {
-              // Scroll by the specified offset
-              window.scrollBy({
-                top: ${deltaY},
-                left: ${deltaX},
-                behavior: '${behavior}'
-              });
-              
-              // Wait a moment for smooth scrolling to complete
-              return new Promise(resolve => {
+        const results = await browser.scripting.executeScript({
+          target: { tabId },
+          func: (deltaX2, deltaY2, behavior2) => {
+            return new Promise((resolve) => {
+              try {
+                window.scrollBy({
+                  top: deltaY2,
+                  left: deltaX2,
+                  behavior: behavior2
+                });
                 const checkPosition = () => {
                   const finalX = window.pageXOffset || document.documentElement.scrollLeft;
                   const finalY = window.pageYOffset || document.documentElement.scrollTop;
@@ -970,24 +1062,23 @@
                     message: "Scrolled by offset successfully"
                   });
                 };
-                
-                if ('${behavior}' === 'smooth') {
-                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                if (behavior2 === "smooth") {
+                  setTimeout(checkPosition, 500);
                 } else {
                   checkPosition();
                 }
-              });
-            } catch (error) {
-              return {
-                success: false,
-                finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
-                message: "Scroll failed: " + error.message
-              };
-            }
-          })();
-        `
+              } catch (error) {
+                resolve({
+                  success: false,
+                  finalPosition: { x: window.pageXOffset || 0, y: window.pageYOffset || 0 },
+                  message: "Scroll failed: " + error.message
+                });
+              }
+            });
+          },
+          args: [deltaX, deltaY, behavior]
         });
-        const result = results[0];
+        const result = results[0].result;
         await this.client.sendResourceToServer({
           resource: "scroll-result",
           correlationId,
@@ -1026,32 +1117,28 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            try {
-              // Find the element using the provided selector
-              const element = document.querySelector('${selector.replace(/'/g, "\\'")}');
-              if (!element) {
-                return {
-                  success: false,
-                  finalPosition: {
-                    x: window.pageXOffset || document.documentElement.scrollLeft,
-                    y: window.pageYOffset || document.documentElement.scrollTop
-                  },
-                  message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
-                };
-              }
-              
-              // Scroll element into view
-              element.scrollIntoView({
-                behavior: '${behavior}',
-                block: '${block}',
-                inline: '${inline}'
-              });
-              
-              // Wait a moment for smooth scrolling to complete
-              return new Promise(resolve => {
+        const results = await browser.scripting.executeScript({
+          target: { tabId },
+          func: (selector2, behavior2, block2, inline2) => {
+            return new Promise((resolve) => {
+              try {
+                const element = document.querySelector(selector2);
+                if (!element) {
+                  resolve({
+                    success: false,
+                    finalPosition: {
+                      x: window.pageXOffset || document.documentElement.scrollLeft,
+                      y: window.pageYOffset || document.documentElement.scrollTop
+                    },
+                    message: `Element not found with selector: ${selector2}`
+                  });
+                  return;
+                }
+                element.scrollIntoView({
+                  behavior: behavior2,
+                  block: block2,
+                  inline: inline2
+                });
                 const checkPosition = () => {
                   const finalX = window.pageXOffset || document.documentElement.scrollLeft;
                   const finalY = window.pageYOffset || document.documentElement.scrollTop;
@@ -1061,27 +1148,26 @@
                     message: "Scrolled to element successfully"
                   });
                 };
-                
-                if ('${behavior}' === 'smooth') {
-                  setTimeout(checkPosition, 500); // Wait for smooth scroll
+                if (behavior2 === "smooth") {
+                  setTimeout(checkPosition, 500);
                 } else {
                   checkPosition();
                 }
-              });
-            } catch (error) {
-              return {
-                success: false,
-                finalPosition: {
-                  x: window.pageXOffset || document.documentElement.scrollLeft || 0,
-                  y: window.pageYOffset || document.documentElement.scrollTop || 0
-                },
-                message: "Scroll failed: " + error.message
-              };
-            }
-          })();
-        `
+              } catch (error) {
+                resolve({
+                  success: false,
+                  finalPosition: {
+                    x: window.pageXOffset || document.documentElement.scrollLeft || 0,
+                    y: window.pageYOffset || document.documentElement.scrollTop || 0
+                  },
+                  message: "Scroll failed: " + error.message
+                });
+              }
+            });
+          },
+          args: [selector, behavior, block, inline]
         });
-        const result = results[0];
+        const result = results[0].result;
         await this.client.sendResourceToServer({
           resource: "scroll-result",
           correlationId,
@@ -1120,143 +1206,21 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            try {
-              // Get the button code for MouseEvent
-              const buttonCode = {
-                'left': 0,
-                'middle': 1,
-                'right': 2
-              }['${button}'];
-              
-              // Find element at coordinates
-              const elementAtPoint = document.elementFromPoint(${x}, ${y});
-              if (!elementAtPoint) {
-                return {
-                  success: false,
-                  elementFound: false,
-                  clickExecuted: false,
-                  message: "No element found at coordinates (${x}, ${y})"
-                };
-              }
-              
-              // Security check - block clicks on sensitive elements
-              const tagName = elementAtPoint.tagName.toLowerCase();
-              const inputType = elementAtPoint.type?.toLowerCase();
-              if ((tagName === 'input' && (inputType === 'password' || inputType === 'file')) ||
-                  tagName === 'script' || tagName === 'iframe') {
-                return {
-                  success: false,
-                  elementFound: true,
-                  clickExecuted: false,
-                  message: "Click blocked on sensitive element for security reasons"
-                };
-              }
-              
-              // Create modifiers object
-              const modifierKeys = {
-                ctrlKey: ${modifiers.ctrl || false},
-                altKey: ${modifiers.alt || false},
-                shiftKey: ${modifiers.shift || false},
-                metaKey: ${modifiers.meta || false}
-              };
-              
-              // Dispatch click event(s)
-              if ('${clickType}' === 'double') {
-                // For double click, dispatch both click and dblclick events
-                const clickEvent = new MouseEvent('click', {
-                  bubbles: true,
-                  cancelable: true,
-                  view: window,
-                  button: buttonCode,
-                  buttons: 1 << buttonCode,
-                  clientX: ${x},
-                  clientY: ${y},
-                  ...modifierKeys
-                });
-                elementAtPoint.dispatchEvent(clickEvent);
-                
-                const dblClickEvent = new MouseEvent('dblclick', {
-                  bubbles: true,
-                  cancelable: true,
-                  view: window,
-                  button: buttonCode,
-                  buttons: 1 << buttonCode,
-                  detail: 2,
-                  clientX: ${x},
-                  clientY: ${y},
-                  ...modifierKeys
-                });
-                elementAtPoint.dispatchEvent(dblClickEvent);
-              } else if ('${button}' === 'right') {
-                // For right click, dispatch contextmenu event
-                const contextMenuEvent = new MouseEvent('contextmenu', {
-                  bubbles: true,
-                  cancelable: true,
-                  view: window,
-                  button: buttonCode,
-                  buttons: 1 << buttonCode,
-                  clientX: ${x},
-                  clientY: ${y},
-                  ...modifierKeys
-                });
-                elementAtPoint.dispatchEvent(contextMenuEvent);
-              } else {
-                // Regular click
-                const clickEvent = new MouseEvent('click', {
-                  bubbles: true,
-                  cancelable: true,
-                  view: window,
-                  button: buttonCode,
-                  buttons: 1 << buttonCode,
-                  clientX: ${x},
-                  clientY: ${y},
-                  ...modifierKeys
-                });
-                elementAtPoint.dispatchEvent(clickEvent);
-              }
-              
-              // Get element info
-              const rect = elementAtPoint.getBoundingClientRect();
-              const style = window.getComputedStyle(elementAtPoint);
-              const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
-                               rect.width > 0 && rect.height > 0;
-              
-              return {
-                success: true,
-                elementFound: true,
-                clickExecuted: true,
-                message: "Click executed successfully at coordinates (${x}, ${y})",
-                elementInfo: {
-                  exists: true,
-                  visible: isVisible,
-                  interactable: !elementAtPoint.disabled,
-                  boundingRect: {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                    top: rect.top,
-                    right: rect.right,
-                    bottom: rect.bottom,
-                    left: rect.left
-                  }
-                }
-              };
-            } catch (error) {
-              return {
-                success: false,
-                elementFound: false,
-                clickExecuted: false,
-                message: "Click failed: " + error.message
-              };
-            }
-          })();
-        `
+        const response = await browser.tabs.sendMessage(tabId, {
+          type: "click-at-coordinates",
+          correlationId,
+          data: {
+            x,
+            y,
+            button,
+            clickType,
+            modifiers
+          }
         });
-        const result = results[0];
+        if (!response.success) {
+          throw new Error(response.error);
+        }
+        const result = response.data;
         await this.client.sendResourceToServer({
           resource: "click-result",
           correlationId,
@@ -1298,178 +1262,22 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            return new Promise((resolve) => {
-              try {
-                let element = null;
-                let attempts = 0;
-                const maxAttempts = Math.max(1, ${waitForElement} / 100);
-                
-                function findAndClickElement() {
-                  attempts++;
-                  element = document.querySelector('${selector.replace(/'/g, "\\'")}');
-                  
-                  if (!element) {
-                    if (attempts < maxAttempts) {
-                      setTimeout(findAndClickElement, 100);
-                      return;
-                    } else {
-                      resolve({
-                        success: false,
-                        elementFound: false,
-                        clickExecuted: false,
-                        message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
-                      });
-                      return;
-                    }
-                  }
-                  
-                  // Security check - block clicks on sensitive elements
-                  const tagName = element.tagName.toLowerCase();
-                  const inputType = element.type?.toLowerCase();
-                  if ((tagName === 'input' && (inputType === 'password' || inputType === 'file')) ||
-                      tagName === 'script' || tagName === 'iframe') {
-                    resolve({
-                      success: false,
-                      elementFound: true,
-                      clickExecuted: false,
-                      message: "Click blocked on sensitive element for security reasons"
-                    });
-                    return;
-                  }
-                  
-                  // Scroll element into view if requested
-                  if (${scrollIntoView}) {
-                    element.scrollIntoView({
-                      behavior: 'smooth',
-                      block: 'center',
-                      inline: 'nearest'
-                    });
-                  }
-                  
-                  // Get the button code for MouseEvent
-                  const buttonCode = {
-                    'left': 0,
-                    'middle': 1,
-                    'right': 2
-                  }['${button}'];
-                  
-                  // Create modifiers object
-                  const modifierKeys = {
-                    ctrlKey: ${modifiers.ctrl || false},
-                    altKey: ${modifiers.alt || false},
-                    shiftKey: ${modifiers.shift || false},
-                    metaKey: ${modifiers.meta || false}
-                  };
-                  
-                  // Get element center coordinates for event
-                  const rect = element.getBoundingClientRect();
-                  const centerX = rect.left + rect.width / 2;
-                  const centerY = rect.top + rect.height / 2;
-                  
-                  // Dispatch click event(s)
-                  if ('${clickType}' === 'double') {
-                    // For double click, dispatch both click and dblclick events
-                    const clickEvent = new MouseEvent('click', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: buttonCode,
-                      buttons: 1 << buttonCode,
-                      clientX: centerX,
-                      clientY: centerY,
-                      ...modifierKeys
-                    });
-                    element.dispatchEvent(clickEvent);
-                    
-                    const dblClickEvent = new MouseEvent('dblclick', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: buttonCode,
-                      buttons: 1 << buttonCode,
-                      detail: 2,
-                      clientX: centerX,
-                      clientY: centerY,
-                      ...modifierKeys
-                    });
-                    element.dispatchEvent(dblClickEvent);
-                  } else if ('${button}' === 'right') {
-                    // For right click, dispatch contextmenu event
-                    const contextMenuEvent = new MouseEvent('contextmenu', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: buttonCode,
-                      buttons: 1 << buttonCode,
-                      clientX: centerX,
-                      clientY: centerY,
-                      ...modifierKeys
-                    });
-                    element.dispatchEvent(contextMenuEvent);
-                  } else {
-                    // Regular click - also try the native click method
-                    if (typeof element.click === 'function') {
-                      element.click();
-                    }
-                    
-                    const clickEvent = new MouseEvent('click', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: buttonCode,
-                      buttons: 1 << buttonCode,
-                      clientX: centerX,
-                      clientY: centerY,
-                      ...modifierKeys
-                    });
-                    element.dispatchEvent(clickEvent);
-                  }
-                  
-                  // Get element info
-                  const style = window.getComputedStyle(element);
-                  const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
-                                   rect.width > 0 && rect.height > 0;
-                  
-                  resolve({
-                    success: true,
-                    elementFound: true,
-                    clickExecuted: true,
-                    message: "Element clicked successfully",
-                    elementInfo: {
-                      exists: true,
-                      visible: isVisible,
-                      interactable: !element.disabled,
-                      boundingRect: {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                        top: rect.top,
-                        right: rect.right,
-                        bottom: rect.bottom,
-                        left: rect.left
-                      }
-                    }
-                  });
-                }
-                
-                findAndClickElement();
-              } catch (error) {
-                resolve({
-                  success: false,
-                  elementFound: false,
-                  clickExecuted: false,
-                  message: "Click failed: " + error.message
-                });
-              }
-            });
-          })();
-        `
+        const response = await browser.tabs.sendMessage(tabId, {
+          type: "click-element",
+          correlationId,
+          data: {
+            selector,
+            button,
+            clickType,
+            waitForElement,
+            scrollIntoView,
+            modifiers
+          }
         });
-        const result = results[0];
+        if (!response.success) {
+          throw new Error(response.error);
+        }
+        const result = response.data;
         await this.client.sendResourceToServer({
           resource: "click-result",
           correlationId,
@@ -1520,136 +1328,20 @@
         if (tab.url && await isDomainInDenyList(tab.url)) {
           throw new Error(`Domain in tab URL '${tab.url}' is in the deny list`);
         }
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-          (function() {
-            return new Promise((resolve) => {
-              try {
-                let element = null;
-                let hoverX = ${x || 0};
-                let hoverY = ${y || 0};
-                
-                ${selector ? `
-                  // Find element by selector
-                  let attempts = 0;
-                  const maxAttempts = Math.max(1, ${waitForElement} / 100);
-                  
-                  function findElement() {
-                    attempts++;
-                    element = document.querySelector('${selector.replace(/'/g, "\\'")}');
-                    
-                    if (!element) {
-                      if (attempts < maxAttempts) {
-                        setTimeout(findElement, 100);
-                        return;
-                      } else {
-                        resolve({
-                          success: false,
-                          elementFound: false,
-                          message: "Element not found with selector: ${selector.replace(/'/g, "\\'")}"
-                        });
-                        return;
-                      }
-                    }
-                    
-                    performHover();
-                  }
-                  
-                  function performHover() {
-                    // Get element center coordinates
-                    const rect = element.getBoundingClientRect();
-                    hoverX = rect.left + rect.width / 2;
-                    hoverY = rect.top + rect.height / 2;
-                    
-                    executeHover();
-                  }
-                  
-                  findElement();
-                ` : `
-                  // Use coordinates directly
-                  element = document.elementFromPoint(hoverX, hoverY);
-                  executeHover();
-                `}
-                
-                function executeHover() {
-                  try {
-                    // Dispatch mouseenter event (doesn't bubble)
-                    const mouseEnterEvent = new MouseEvent('mouseenter', {
-                      bubbles: false,
-                      cancelable: false,
-                      view: window,
-                      clientX: hoverX,
-                      clientY: hoverY
-                    });
-                    
-                    // Dispatch mouseover event (bubbles)
-                    const mouseOverEvent = new MouseEvent('mouseover', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      clientX: hoverX,
-                      clientY: hoverY
-                    });
-                    
-                    if (element) {
-                      element.dispatchEvent(mouseEnterEvent);
-                      element.dispatchEvent(mouseOverEvent);
-                    } else {
-                      // If no element at coordinates, dispatch on document
-                      document.dispatchEvent(mouseOverEvent);
-                    }
-                    
-                    // Get element info if element exists
-                    let elementInfo = undefined;
-                    if (element) {
-                      const rect = element.getBoundingClientRect();
-                      const style = window.getComputedStyle(element);
-                      const isVisible = style.display !== 'none' && style.visibility !== 'hidden' &&
-                                       rect.width > 0 && rect.height > 0;
-                      
-                      elementInfo = {
-                        exists: true,
-                        visible: isVisible,
-                        interactable: !element.disabled,
-                        boundingRect: {
-                          x: rect.x,
-                          y: rect.y,
-                          width: rect.width,
-                          height: rect.height,
-                          top: rect.top,
-                          right: rect.right,
-                          bottom: rect.bottom,
-                          left: rect.left
-                        }
-                      };
-                    }
-                    
-                    resolve({
-                      success: true,
-                      elementFound: !!element,
-                      message: element ? "Hover executed successfully on element" : "Hover executed at coordinates",
-                      elementInfo: elementInfo
-                    });
-                  } catch (error) {
-                    resolve({
-                      success: false,
-                      elementFound: !!element,
-                      message: "Hover failed: " + error.message
-                    });
-                  }
-                }
-              } catch (error) {
-                resolve({
-                  success: false,
-                  elementFound: false,
-                  message: "Hover failed: " + error.message
-                });
-              }
-            });
-          })();
-        `
+        const response = await browser.tabs.sendMessage(tabId, {
+          type: "hover-element",
+          correlationId,
+          data: {
+            selector,
+            x,
+            y,
+            waitForElement
+          }
         });
-        const result = results[0];
+        if (!response.success) {
+          throw new Error(response.error);
+        }
+        const result = response.data;
         await this.client.sendResourceToServer({
           resource: "hover-result",
           correlationId,

@@ -53,3 +53,4 @@ jspm_packages/
 .roo/mcp.json
 mcp.json
 .roomodes
+application_default_credentials.json

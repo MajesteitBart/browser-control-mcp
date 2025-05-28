@@ -42,6 +42,8 @@ describe("MessageHandler", () => {
         "reorder-browser-tabs": true,
         "find-highlight-in-browser-tab": true,
         "take-screenshot": true,
+        "click-at-coordinates": true,
+        "click-element": true,
       },
       domainDenyList: [],
       screenshotConfig: {
@@ -547,28 +549,35 @@ describe("MessageHandler", () => {
           "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         );
         
-        // Mock browser.tabs.executeScript for page dimensions and scrolling
-        (browser.tabs.executeScript as jest.Mock).mockImplementation((tabId, options) => {
-          const code = options.code;
-          if (code.includes('fullHeight')) {
+        // Mock browser.scripting.executeScript for page dimensions and scrolling
+        (browser.scripting.executeScript as jest.Mock).mockImplementation((injection) => {
+          const func = injection.func;
+          const args = injection.args || [];
+          
+          if (func && func.toString().includes('fullHeight')) {
             // Mock page dimensions query - return short page that fits in viewport
             return Promise.resolve([{
-              fullHeight: 800,
-              viewportHeight: 800,
-              viewportWidth: 1280
+              result: {
+                fullHeight: 800,
+                viewportHeight: 800,
+                viewportWidth: 1280
+              }
             }]);
-          } else if (code.includes('pageYOffset')) {
+          } else if (func && func.toString().includes('pageYOffset')) {
             // Mock scroll position query
-            return Promise.resolve([0]);
-          } else if (code.includes('scrollTo')) {
+            return Promise.resolve([{ result: 0 }]);
+          } else if (func && func.toString().includes('scrollTo')) {
             // Mock scrollTo operation
-            return Promise.resolve([undefined]);
-          } else if (code.includes('img[loading="lazy"]')) {
+            return Promise.resolve([{ result: undefined }]);
+          } else if (func && func.toString().includes('img[loading="lazy"]')) {
             // Mock lazy image loading wait
-            return Promise.resolve([Promise.resolve()]);
+            return Promise.resolve([{ result: Promise.resolve() }]);
+          } else if (func && func.toString().includes('screenshots') && func.toString().includes('totalHeight')) {
+            // Mock stitching function - return a data URL
+            return Promise.resolve([{ result: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' }]);
           }
           // Default fallback
-          return Promise.resolve([undefined]);
+          return Promise.resolve([{ result: undefined }]);
         });
       });
 
@@ -912,6 +921,1015 @@ describe("MessageHandler", () => {
           imageData: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA==",
           format: "jpeg",
           timestamp: expect.any(Number),
+        });
+      });
+    });
+
+    describe("click-at-coordinates command", () => {
+      beforeEach(() => {
+        // Mock browser APIs for click tests
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          status: "complete",
+          windowId: 1
+        });
+        
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Click executed successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 90,
+                y: 190,
+                width: 20,
+                height: 20,
+                top: 190,
+                right: 110,
+                bottom: 210,
+                left: 90
+              }
+            }
+          }
+        });
+      });
+
+      it("should successfully click at coordinates with default parameters", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockScriptResult = [{
+          success: true,
+          elementFound: true,
+          clickExecuted: true,
+          message: "Click executed successfully at coordinates (100, 200)",
+          elementInfo: {
+            exists: true,
+            visible: true,
+            interactable: true,
+            boundingRect: {
+              x: 90,
+              y: 190,
+              width: 20,
+              height: 20,
+              top: 190,
+              right: 110,
+              bottom: 210,
+              left: 90
+            }
+          }
+        }];
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).toHaveBeenCalledWith(123);
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-at-coordinates",
+          correlationId: "test-correlation-id",
+          data: {
+            x: 100,
+            y: 200,
+            button: "left",
+            clickType: "single",
+            modifiers: {}
+          }
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: true,
+          elementFound: true,
+          clickExecuted: true,
+          message: "Click executed successfully",
+          timestamp: expect.any(Number),
+          elementInfo: {
+            exists: true,
+            visible: true,
+            interactable: true,
+            boundingRect: {
+              x: 90,
+              y: 190,
+              width: 20,
+              height: 20,
+              top: 190,
+              right: 110,
+              bottom: 210,
+              left: 90
+            }
+          }
+        });
+      });
+
+      it("should successfully click at coordinates with right button and double click", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 150,
+          y: 250,
+          button: "right",
+          clickType: "double",
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Click executed successfully at coordinates (150, 250)",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 140,
+                y: 240,
+                width: 20,
+                height: 20,
+                top: 240,
+                right: 160,
+                bottom: 260,
+                left: 140
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-at-coordinates",
+          correlationId: "test-correlation-id",
+          data: {
+            x: 150,
+            y: 250,
+            button: "right",
+            clickType: "double",
+            modifiers: {}
+          }
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: true,
+          elementFound: true,
+          clickExecuted: true,
+          message: "Click executed successfully at coordinates (150, 250)",
+          timestamp: expect.any(Number),
+          elementInfo: expect.any(Object)
+        });
+      });
+
+      it("should successfully click at coordinates with modifier keys", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          modifiers: {
+            ctrl: true,
+            shift: true
+          },
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Click executed successfully at coordinates (100, 200)",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 90,
+                y: 190,
+                width: 20,
+                height: 20,
+                top: 190,
+                right: 110,
+                bottom: 210,
+                left: 90
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-at-coordinates",
+          correlationId: "test-correlation-id",
+          data: {
+            x: 100,
+            y: 200,
+            button: "left",
+            clickType: "single",
+            modifiers: {
+              ctrl: true,
+              shift: true
+            }
+          }
+        });
+      });
+
+      it("should handle case when no element found at coordinates", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response for no element found
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: false,
+            elementFound: false,
+            clickExecuted: false,
+            message: "No element found at coordinates (100, 200)"
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "No element found at coordinates (100, 200)",
+          timestamp: expect.any(Number),
+          elementInfo: undefined
+        });
+      });
+
+      it("should handle security blocking on sensitive elements", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response for security blocking
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: false,
+            elementFound: true,
+            clickExecuted: false,
+            message: "Click blocked on sensitive element for security reasons"
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: true,
+          clickExecuted: false,
+          message: "Click blocked on sensitive element for security reasons",
+          timestamp: expect.any(Number),
+          elementInfo: undefined
+        });
+      });
+
+      it("should handle script execution failure (simulating CSP issues)", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock sendMessage failure (content script not responding/loaded)
+        (browser.tabs.sendMessage as jest.Mock).mockRejectedValue(
+          new Error("Could not establish connection. Receiving end does not exist.")
+        );
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Could not establish connection. Receiving end does not exist.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error for invalid tab ID", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: -1,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Invalid tab ID: -1. Tab ID must be a positive integer.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error for invalid coordinates", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: -10,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Invalid x coordinate: -10. X coordinate must be a non-negative integer.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error when tab is not ready", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          status: "loading",
+          windowId: 1
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Tab 123 not found or not ready",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error when domain is in deny list", async () => {
+        // Arrange
+        const configWithDenyList: ExtensionConfig = {
+          secret: "test-secret",
+          toolSettings: {
+            "open-browser-tab": true,
+            "close-browser-tabs": true,
+            "get-list-of-open-tabs": true,
+            "get-recent-browser-history": true,
+            "get-tab-web-content": true,
+            "reorder-browser-tabs": true,
+            "find-highlight-in-browser-tab": true,
+            "take-screenshot": true,
+          },
+          domainDenyList: ["example.com"],
+          screenshotConfig: {
+            defaultFormat: "png",
+            defaultQuality: 90,
+            maxWidth: 1920,
+            maxHeight: 1080
+          }
+        };
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: configWithDenyList,
+        });
+
+        const request: ServerMessageRequest = {
+          cmd: "click-at-coordinates",
+          tabId: 123,
+          x: 100,
+          y: 200,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Domain in tab URL 'https://example.com' is in the deny list",
+          timestamp: expect.any(Number)
+        });
+      });
+    });
+
+    describe("click-element command", () => {
+      beforeEach(() => {
+        // Mock browser APIs for click tests
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          status: "complete",
+          windowId: 1
+        });
+      });
+
+      it("should successfully click element with default parameters", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "#submit-button",
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Element clicked successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 100,
+                y: 200,
+                width: 80,
+                height: 30,
+                top: 200,
+                right: 180,
+                bottom: 230,
+                left: 100
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).toHaveBeenCalledWith(123);
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-element",
+          correlationId: "test-correlation-id",
+          data: {
+            selector: "#submit-button",
+            button: "left",
+            clickType: "single",
+            modifiers: {},
+            scrollIntoView: true,
+            waitForElement: 5000
+          }
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: true,
+          elementFound: true,
+          clickExecuted: true,
+          message: "Element clicked successfully",
+          timestamp: expect.any(Number),
+          elementInfo: {
+            exists: true,
+            visible: true,
+            interactable: true,
+            boundingRect: {
+              x: 100,
+              y: 200,
+              width: 80,
+              height: 30,
+              top: 200,
+              right: 180,
+              bottom: 230,
+              left: 100
+            }
+          }
+        });
+      });
+
+      it("should successfully click element with middle button and custom wait time", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: ".action-button",
+          button: "middle",
+          waitForElement: 10000,
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Element clicked successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 50,
+                y: 150,
+                width: 100,
+                height: 40,
+                top: 150,
+                right: 150,
+                bottom: 190,
+                left: 50
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-element",
+          correlationId: "test-correlation-id",
+          data: {
+            selector: ".action-button",
+            button: "middle",
+            clickType: "single",
+            modifiers: {},
+            scrollIntoView: true,
+            waitForElement: 10000
+          }
+        });
+      });
+
+      it("should successfully click element without scrolling into view", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "button[data-action='save']",
+          scrollIntoView: false,
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Element clicked successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 200,
+                y: 300,
+                width: 60,
+                height: 25,
+                top: 300,
+                right: 260,
+                bottom: 325,
+                left: 200
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-element",
+          correlationId: "test-correlation-id",
+          data: {
+            selector: "button[data-action='save']",
+            button: "left",
+            clickType: "single",
+            modifiers: {},
+            scrollIntoView: false,
+            waitForElement: 5000
+          }
+        });
+      });
+
+      it("should successfully click element with all modifier keys", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "a.external-link",
+          modifiers: {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            meta: true
+          },
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Element clicked successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 75,
+                y: 125,
+                width: 150,
+                height: 20,
+                top: 125,
+                right: 225,
+                bottom: 145,
+                left: 75
+              }
+            }
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-element",
+          correlationId: "test-correlation-id",
+          data: {
+            selector: "a.external-link",
+            button: "left",
+            clickType: "single",
+            modifiers: {
+              ctrl: true,
+              alt: true,
+              shift: true,
+              meta: true
+            },
+            scrollIntoView: true,
+            waitForElement: 5000
+          }
+        });
+      });
+
+      it("should handle case when element is not found", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "#non-existent-element",
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response for element not found
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: false,
+            elementFound: false,
+            clickExecuted: false,
+            message: "Element not found with selector: #non-existent-element"
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Element not found with selector: #non-existent-element",
+          timestamp: expect.any(Number),
+          elementInfo: undefined
+        });
+      });
+
+      it("should handle security blocking on sensitive elements", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "input[type='password']",
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock content script response for security blocking
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+          success: true,
+          data: {
+            success: false,
+            elementFound: true,
+            clickExecuted: false,
+            message: "Click blocked on sensitive element for security reasons"
+          }
+        });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: true,
+          clickExecuted: false,
+          message: "Click blocked on sensitive element for security reasons",
+          timestamp: expect.any(Number),
+          elementInfo: undefined
+        });
+      });
+
+      it("should handle script execution failure due to CSP", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "#target-element",
+          correlationId: "test-correlation-id",
+        };
+
+        // Mock sendMessage failure (content script not responding/loaded)
+        (browser.tabs.sendMessage as jest.Mock).mockRejectedValue(
+          new Error("Could not establish connection. Receiving end does not exist.")
+        );
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Could not establish connection. Receiving end does not exist.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error for invalid tab ID", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: -1,
+          selector: "#button",
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Invalid tab ID: -1. Tab ID must be a positive integer.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error for empty selector", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "",
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Invalid selector: selector must be a non-empty string.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error for potentially dangerous selector", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "<script>alert('xss')</script>",
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.get).not.toHaveBeenCalled();
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Invalid selector: potentially dangerous characters detected.",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should throw error when tab does not exist", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 999,
+          selector: "#button",
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockRejectedValue(new Error("Tab not found"));
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: false,
+          elementFound: false,
+          clickExecuted: false,
+          message: "Click failed: Tab not found",
+          timestamp: expect.any(Number)
+        });
+      });
+
+      it("should handle complex selectors with proper escaping", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "click-element",
+          tabId: 123,
+          selector: "div[data-value='test\\'s value']",
+          correlationId: "test-correlation-id",
+        };
+
+        const mockContentScriptResponse = {
+          success: true,
+          data: {
+            success: true,
+            elementFound: true,
+            clickExecuted: true,
+            message: "Element clicked successfully",
+            elementInfo: {
+              exists: true,
+              visible: true,
+              interactable: true,
+              boundingRect: {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+                top: 20,
+                right: 40,
+                bottom: 60,
+                left: 10
+              }
+            }
+          }
+        };
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue(mockContentScriptResponse);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(123, {
+          type: "click-element",
+          correlationId: "test-correlation-id",
+          data: {
+            selector: "div[data-value='test\\'s value']",
+            button: "left",
+            clickType: "single",
+            modifiers: {},
+            scrollIntoView: true,
+            waitForElement: 5000
+          }
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "click-result",
+          correlationId: "test-correlation-id",
+          success: true,
+          elementFound: true,
+          clickExecuted: true,
+          message: "Element clicked successfully",
+          timestamp: expect.any(Number),
+          elementInfo: expect.any(Object)
         });
       });
     });

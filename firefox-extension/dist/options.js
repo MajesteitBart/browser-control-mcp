@@ -41,6 +41,16 @@
       id: "take-screenshot",
       name: "Take Screenshot",
       description: "Allows the MCP server to capture screenshots of browser tabs"
+    },
+    {
+      id: "click-at-coordinates",
+      name: "Click at Coordinates",
+      description: "Allows the MCP server to click at specific coordinates on web pages"
+    },
+    {
+      id: "click-element",
+      name: "Click Element",
+      description: "Allows the MCP server to click on specific elements using CSS selectors"
     }
   ];
   function getDefaultToolSettings() {

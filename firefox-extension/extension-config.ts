@@ -49,6 +49,16 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "take-screenshot",
     name: "Take Screenshot",
     description: "Allows the MCP server to capture screenshots of browser tabs"
+  },
+  {
+    id: "click-at-coordinates",
+    name: "Click at Coordinates",
+    description: "Allows the MCP server to click at specific coordinates on web pages"
+  },
+  {
+    id: "click-element",
+    name: "Click Element",
+    description: "Allows the MCP server to click on specific elements using CSS selectors"
   }
 ];
 
@@ -61,7 +71,9 @@ export const COMMAND_TO_TOOL_ID: Record<string, string> = {
   "get-tab-content": "get-tab-web-content",
   "reorder-tabs": "reorder-browser-tabs",
   "find-highlight": "find-highlight-in-browser-tab",
-  "take-screenshot": "take-screenshot"
+  "take-screenshot": "take-screenshot",
+  "click-at-coordinates": "click-at-coordinates",
+  "click-element": "click-element"
 };
 
 // Storage schema for tool settings

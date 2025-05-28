@@ -4,6 +4,10 @@
 
 **Browser Control MCP** is a Model Context Protocol (MCP) server that enables AI assistants and other MCP clients to control browser tabs through a Firefox extension. The project provides a secure WebSocket-based communication channel between MCP clients and the browser extension.
 
+## Directus Project
+- **Name**: Browser Control MCP
+- **ID**: 2
+
 ## Project Type
 **Existing Project** - This is a mature, functional project with established architecture and implementation.
 
